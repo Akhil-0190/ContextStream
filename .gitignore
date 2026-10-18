@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+!.env.local.example
 *.pem
 *.key
 *.p12
@@ -16,9 +17,13 @@
 /need_to_develop.txt
 /context_transfer.txt
 /previous_chat_messages.txt
+/teammate_product_catalog_handoff.txt
+/chat1.txt
+/chat2.txt
 
 # Dependencies and generated output
 /node_modules/
+/.npm-cache/
 /coverage/
 /dist/
 /build/

@@ -1,4 +1,49 @@
 const MAX_IMAGE_BYTES = 14 * 1024 * 1024;
+let objectDetectorWorker = null;
+let objectDetectorReadyPromise = null;
+const detectorRequests = new Map();
+
+function ensureObjectDetector() {
+  if (objectDetectorReadyPromise) return objectDetectorReadyPromise;
+  objectDetectorReadyPromise = new Promise((resolve, reject) => {
+    try {
+      objectDetectorWorker = new Worker(chrome.runtime.getURL('object-detector-worker.js'));
+      const timeout = setTimeout(() => reject(new Error('Local object detector initialization timed out.')), 20_000);
+      objectDetectorWorker.onmessage = event => {
+        const message = event.data || {};
+        if (message.type === 'ready') { clearTimeout(timeout); resolve(); return; }
+        if (message.type === 'error' && message.requestId == null) { clearTimeout(timeout); objectDetectorWorker?.terminate(); objectDetectorWorker = null; objectDetectorReadyPromise = null; reject(new Error(message.error || 'Local object detector initialization failed.')); return; }
+        const pending = detectorRequests.get(message.requestId);
+        if (!pending) return;
+        detectorRequests.delete(message.requestId);
+        pending(message.type === 'detections' ? { ok: true, detections: message.detections || [], videoTimeSeconds: message.videoTimeSeconds } : { ok: false, error: message.error || 'Local detection failed.' });
+      };
+      objectDetectorWorker.onerror = event => {
+        clearTimeout(timeout);
+        const reason = event.message || 'Local detector worker failed to load.';
+        for (const pending of detectorRequests.values()) pending({ ok: false, error: reason });
+        detectorRequests.clear();
+        objectDetectorWorker = null;
+        objectDetectorReadyPromise = null;
+        reject(new Error(reason));
+      };
+      objectDetectorWorker.postMessage({ type: 'initialize', extensionBaseUrl: chrome.runtime.getURL('') });
+    } catch (error) { reject(error); }
+  }).catch(error => { objectDetectorWorker?.terminate(); objectDetectorWorker = null; objectDetectorReadyPromise = null; throw error; });
+  return objectDetectorReadyPromise;
+}
+
+async function runLocalObjectDetection(message, respond) {
+  try {
+    await ensureObjectDetector();
+    if (message.type === 'LOCAL_DETECTOR_INITIALIZE') { respond({ ok: true }); return; }
+    const response = await fetch(message.frameData);
+    if (!response.ok) throw new Error('Could not decode the local detector frame.');
+    const bitmap = await createImageBitmap(await response.blob());
+    detectorRequests.set(message.requestId, respond);
+    objectDetectorWorker.postMessage({ type: 'detect', bitmap, videoTimeSeconds: message.videoTimeSeconds, requestId: message.requestId }, [bitmap]);
+  } catch (error) { detectorRequests.delete(message.requestId); respond({ ok: false, error: error.message || 'Local detection failed.' }); }
+}
 
 function canvasBlob(canvas, type, quality) {
   return new Promise((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Canvas encoding failed.')), type, quality));
@@ -72,6 +117,14 @@ async function capturePlayerFrame(streamId, crop) {
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, respond) => {
+  if (message.target === 'offscreen' && message.type === 'LOCAL_DETECTOR_INITIALIZE') {
+    runLocalObjectDetection(message, respond);
+    return true;
+  }
+  if (message.target === 'offscreen' && message.type === 'LOCAL_DETECTOR_FRAME') {
+    runLocalObjectDetection(message, respond);
+    return true;
+  }
   if (message.target !== 'offscreen' || message.type !== 'CAPTURE_PLAYER_FRAME') return;
   capturePlayerFrame(message.streamId, message.crop)
     .then(result => respond({ ok: true, ...result }))

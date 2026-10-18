@@ -3,6 +3,18 @@
   "version": "0.1.0",
   "private": true,
   "description": "Consent-first contextual discovery for YouTube",
-  "scripts": { "start": "node server.js", "dev": "node --watch server.js" },
-  "engines": { "node": ">=20" }
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@google-cloud/firestore": "^8.7.1",
+    "firebase-admin": "^13.10.0"
+  },
+  "devDependencies": {
+    "@mediapipe/tasks-vision": "^1.1.1"
+  }
 }
