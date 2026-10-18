@@ -882,18 +882,78 @@ function mergeProductSources(sources, _limit = Infinity, query = '', { traceId =
     let existing = merged.get(normalized);
     if (!existing) {
       const titleKey = listingTitleKey(product.title);
-      if (titleKey.length >= 18) existing = [...merged.values()].find(candidate => listingTitleKey(candidate.title) === titleKey);
+      if (titleKey.length >= 18) {
+        // Coalesce by title only if from the same retailer/host so distinct merchant offers remain separate!
+        const host = (() => { try { return new URL(product.url).hostname.replace(/^www\./, ''); } catch { return ''; } })();
+        existing = [...merged.values()].find(candidate => {
+          try {
+            const candidateHost = new URL(candidate.url).hostname.replace(/^www\./, '');
+            return candidateHost && candidateHost === host && listingTitleKey(candidate.title) === titleKey;
+          } catch { return false; }
+        });
+      }
     }
     if (!existing && product.source === 'Gemini Google Search') {
-      existing = [...merged.values()].find(candidate => candidate.source === 'Google Shopping' && sameProductTitle(candidate.title, product.title));
+      existing = [...merged.values()].find(candidate => candidate.source && candidate.source.includes('Shopping') && sameProductTitle(candidate.title, product.title));
     }
     if (existing) {
       existing.sources = [...new Set([...(existing.sources || [existing.source]), product.source || name])];
-      if (existing.priceInr == null && product.priceInr != null) { existing.priceInr = product.priceInr; existing.priceText = product.priceText || ''; }
-      if (existing.priceAmount == null && product.priceAmount != null) { existing.priceAmount = product.priceAmount; existing.currency = product.currency || existing.currency; existing.priceText = product.priceText || existing.priceText; }
+      // Price enrichment: prefer structured price over snippet-derived price
+      if (product.fieldVerification?.price === 'source_structured' && existing.fieldVerification?.price !== 'source_structured') {
+        existing.priceInr = product.priceInr;
+        existing.priceAmount = product.priceAmount;
+        existing.currency = product.currency || existing.currency;
+        existing.priceText = product.priceText || existing.priceText;
+        if (existing.fieldVerification) existing.fieldVerification.price = 'source_structured';
+      } else if (existing.priceInr == null && product.priceInr != null) {
+        existing.priceInr = product.priceInr;
+        existing.priceText = product.priceText || '';
+        if (product.priceAmount != null) {
+          existing.priceAmount = product.priceAmount;
+          existing.currency = product.currency || existing.currency;
+        }
+        if (existing.fieldVerification && product.fieldVerification) {
+          existing.fieldVerification.price = product.fieldVerification.price;
+        }
+      }
+
+      // Stock & delivery enrichment
+      if (existing.fieldVerification?.stock === 'unverified' && product.fieldVerification?.stock && product.fieldVerification.stock !== 'unverified') {
+        existing.inStock = product.inStock;
+        existing.fieldVerification.stock = product.fieldVerification.stock;
+      }
+      if (existing.fieldVerification?.delivery === 'unverified' && product.fieldVerification?.delivery && product.fieldVerification.delivery !== 'unverified') {
+        existing.delivery = product.delivery;
+        existing.fieldVerification.delivery = product.fieldVerification.delivery;
+      }
+
+      // Multi-provider corroboration: if both visual Lens and a Shopping offer agree
+      const hasLens = existing.sources.some(s => s.toLowerCase().includes('lens'));
+      const hasShopping = existing.sources.some(s => s.toLowerCase().includes('shopping'));
+      if (hasLens && hasShopping && existing.fieldVerification) {
+        existing.fieldVerification.identity = (existing.matchType === 'exact' || product.matchType === 'exact') ? 'confirmed' : 'probable';
+      }
+
+      // Upgrade matchType if product brings stronger evidence
+      if (product.matchType === 'exact' && existing.matchType !== 'exact') {
+        existing.matchType = 'exact';
+        existing.matchConfidence = Math.max(existing.matchConfidence || 0, product.matchConfidence || 0.85);
+        existing.matchReason = product.matchReason || existing.matchReason;
+        existing.match = product.match;
+        if (existing.fieldVerification) existing.fieldVerification.identity = 'confirmed';
+      } else if (product.matchType === 'supported' && existing.matchType === 'similar') {
+        existing.matchType = 'supported';
+        existing.matchConfidence = Math.max(existing.matchConfidence || 0, product.matchConfidence || 0.70);
+        existing.matchReason = product.matchReason || existing.matchReason;
+        existing.match = product.match;
+        if (existing.fieldVerification && existing.fieldVerification.identity === 'unverified') {
+          existing.fieldVerification.identity = 'probable';
+        }
+      }
+
       if (!existing.image && product.image) existing.image = product.image;
       if ((!existing.description || existing.description.length < 80) && product.description) existing.description = product.description;
-      if (product.source === 'Gemini Google Search' && existing.source === 'Google Shopping') existing.groundedUrl = product.url;
+      if (product.source === 'Gemini Google Search' && existing.source && existing.source.includes('Shopping')) existing.groundedUrl = product.url;
       continue;
     }
     merged.set(normalized, { ...product, sources: [product.source || name] });
@@ -916,7 +976,9 @@ function mergeProductSources(sources, _limit = Infinity, query = '', { traceId =
     const discussionMismatch = [...discussionTerms].some(token => titleAndRetailer.has(token)) ? 22 : 0;
     const missingPrimary = primaryTokens.length && !primaryOverlap ? 18 : 0;
     const directProductPage = /\/(?:dp|ip|itm|product|products|p|item)\//i.test(new URL(product.url).pathname) ? 12 : 0;
-    product._rankScore = Math.min(primaryOverlap, 5) * 18 + Math.min(overlap, 12) * 3 + directProductPage + (product.priceInr != null ? 6 : 0) + (product.image ? 2 : 0) + Math.min(3, Math.max(0, (product.sources?.length || 1) - 1)) * 15 - accessoryMismatch - discussionMismatch - missingPrimary - Math.max(0, Number(product.position) || 0) * 0.1;
+    const exactBonus = (product.matchType === 'exact' || product.matchType === 'exact_text') ? 24 : (product.matchType === 'supported' ? 12 : 0);
+    const multiProviderBonus = Math.min(3, Math.max(0, (product.sources?.length || 1) - 1)) * 15;
+    product._rankScore = Math.min(primaryOverlap, 5) * 18 + Math.min(overlap, 12) * 3 + directProductPage + exactBonus + (product.priceInr != null ? 6 : 0) + (product.image ? 2 : 0) + multiProviderBonus - accessoryMismatch - discussionMismatch - missingPrimary - Math.max(0, Number(product.position) || 0) * 0.1;
     return product;
   });
   result.sort((a, b) => b._rankScore - a._rankScore || a.position - b.position);
