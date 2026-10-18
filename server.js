@@ -3,6 +3,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const util = require('node:util');
+const dns = require('node:dns').promises;
+const net = require('node:net');
 
 const ROOT = __dirname;
 const PORT = Number(process.env.PORT || 8080);
@@ -336,6 +338,170 @@ function cleanProductUrl(rawUrl) {
   }
   return parsed;
 }
+const productPageImageCache = new Map();
+function isPublicImageFetchAddress(address) {
+  const family = net.isIP(address);
+  if (family === 4) {
+    const octets = address.split('.').map(Number);
+    const [a, b] = octets;
+    return !(a === 0 || a === 10 || a === 127 || a >= 224 || (a === 100 && b >= 64 && b <= 127) ||
+      (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) ||
+      (a === 198 && (b === 18 || b === 19)));
+  }
+  if (family === 6) {
+    const normalized = address.toLowerCase().split('%')[0];
+    if (normalized.startsWith('::ffff:')) return isPublicImageFetchAddress(normalized.slice(7));
+    return normalized !== '::' && normalized !== '::1' && !normalized.startsWith('fc') &&
+      !normalized.startsWith('fd') && !normalized.startsWith('fe8') && !normalized.startsWith('fe9') &&
+      !normalized.startsWith('fea') && !normalized.startsWith('feb') && !normalized.startsWith('ff');
+  }
+  return false;
+}
+async function validateProductPageImageFetchUrl(rawUrl) {
+  let parsed;
+  try { parsed = new URL(rawUrl); } catch { return null; }
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password || !parsed.hostname ||
+      parsed.hostname === 'localhost' || parsed.hostname.endsWith('.localhost') || parsed.hostname.endsWith('.local')) return null;
+  const literalFamily = net.isIP(parsed.hostname);
+  if (literalFamily) return isPublicImageFetchAddress(parsed.hostname) ? parsed : null;
+  try {
+    const addresses = await dns.lookup(parsed.hostname, { all: true, verbatim: true });
+    if (!addresses.length || addresses.some(entry => !isPublicImageFetchAddress(entry.address))) return null;
+  } catch { return null; }
+  return parsed;
+}
+function decodeProductHtmlValue(value) {
+  return String(value || '').replace(/&(?:amp|quot|apos|lt|gt);|&#(?:x[\da-f]+|\d+);/gi, entity => {
+    const named = { '&amp;': '&', '&quot;': '"', '&apos;': "'", '&lt;': '<', '&gt;': '>' };
+    if (named[entity.toLowerCase()]) return named[entity.toLowerCase()];
+    const hex = entity.match(/^&#x([\da-f]+);$/i);
+    const decimal = entity.match(/^&#(\d+);$/);
+    const point = hex ? parseInt(hex[1], 16) : decimal ? Number(decimal[1]) : NaN;
+    try { return Number.isFinite(point) ? String.fromCodePoint(point) : entity; } catch { return entity; }
+  }).trim();
+}
+function resolveProductPageImageUrl(rawImage, pageUrl) {
+  const value = decodeProductHtmlValue(typeof rawImage === 'object' && rawImage ? rawImage.url || rawImage['@id'] : rawImage);
+  if (!value || value.startsWith('data:')) return '';
+  try {
+    const parsed = new URL(value, pageUrl);
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? parsed.href : '';
+  } catch { return ''; }
+}
+function imageUrlFromProviderValue(value, pageUrl) {
+  if (typeof value === 'string') return resolveProductPageImageUrl(value, pageUrl);
+  if (Array.isArray(value)) {
+    for (const entry of value) { const image = imageUrlFromProviderValue(entry, pageUrl); if (image) return image; }
+    return '';
+  }
+  if (value && typeof value === 'object') {
+    for (const key of ['src', 'url', 'original', 'contentUrl', 'image']) {
+      const image = imageUrlFromProviderValue(value[key], pageUrl);
+      if (image) return image;
+    }
+  }
+  return '';
+}
+function productImageFromJsonLdValue(value, pageUrl) {
+  if (!value) return '';
+  const records = Array.isArray(value) ? value : [value];
+  for (const record of records) {
+    if (typeof record === 'string') {
+      const image = resolveProductPageImageUrl(record, pageUrl);
+      if (image) return image;
+    } else if (record && typeof record === 'object') {
+      const type = record['@type'];
+      const types = (Array.isArray(type) ? type : [type]).map(value => String(value || '').toLowerCase());
+      if (types.some(value => value === 'product' || value.endsWith('/product'))) {
+        const image = imageUrlFromProviderValue(record.image, pageUrl);
+        if (image) return image;
+      }
+      const nested = productImageFromJsonLdValue(record['@graph'] || record.itemListElement, pageUrl);
+      if (nested) return nested;
+    }
+  }
+  return '';
+}
+function extractProductPageImage(html, pageUrl) {
+  const jsonLdScripts = String(html || '').matchAll(/<script\b[^>]*type\s*=\s*(["'])application\/ld\+json\1[^>]*>([\s\S]*?)<\/script\s*>/gi);
+  for (const [, , source] of jsonLdScripts) {
+    try {
+      const image = productImageFromJsonLdValue(JSON.parse(source.replace(/^\s*<!--|-->\s*$/g, '')), pageUrl);
+      if (image) return image;
+    } catch { /* Ignore malformed or non-JSON-LD scripts. */ }
+  }
+  const metaTags = String(html || '').match(/<meta\b[^>]*>/gi) || [];
+  const meta = new Map();
+  for (const tag of metaTags) {
+    const attrs = new Map([...tag.matchAll(/([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g)].map(match => [match[1].toLowerCase(), decodeProductHtmlValue(match[2] ?? match[3] ?? match[4])]));
+    const key = (attrs.get('property') || attrs.get('name') || '').toLowerCase();
+    if (key && attrs.has('content')) meta.set(key, attrs.get('content'));
+  }
+  for (const key of ['og:image', 'og:image:url', 'twitter:image', 'twitter:image:src']) {
+    const image = resolveProductPageImageUrl(meta.get(key), pageUrl);
+    if (image) return image;
+  }
+  return '';
+}
+async function fetchProductPageImage(rawUrl) {
+  const initial = await validateProductPageImageFetchUrl(rawUrl);
+  if (!initial) return '';
+  const cacheKey = initial.href;
+  const cached = productPageImageCache.get(cacheKey);
+  if (cached?.promise) return cached.promise;
+  if (cached && cached.expiresAt > Date.now()) return cached.image;
+  const promise = (async () => {
+    let currentUrl = initial.href;
+    const signal = AbortSignal.timeout(3500);
+    try {
+      for (let redirect = 0; redirect <= 2; redirect++) {
+        const validated = await validateProductPageImageFetchUrl(currentUrl);
+        if (!validated) return '';
+        const response = await fetch(validated, {
+          redirect: 'manual',
+          headers: { accept: 'text/html,application/xhtml+xml;q=0.9', 'user-agent': 'ContextStream Product Image Preview/1.0' },
+          signal
+        });
+        if ([301, 302, 303, 307, 308].includes(response.status)) {
+          const location = response.headers.get('location');
+          if (!location || redirect === 2) return '';
+          currentUrl = new URL(location, validated).href;
+          continue;
+        }
+        if (!response.ok || !/^(text\/html|application\/xhtml\+xml)(;|$)/i.test(response.headers.get('content-type') || '')) return '';
+        const reader = response.body?.getReader();
+        if (!reader) return '';
+        const chunks = []; let size = 0;
+        while (size < 512 * 1024) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunk = value.subarray(0, 512 * 1024 - size);
+          chunks.push(chunk); size += chunk.byteLength;
+          if (chunk.byteLength !== value.byteLength) { await reader.cancel(); break; }
+        }
+        const html = Buffer.concat(chunks).toString('utf8');
+        return extractProductPageImage(html, validated.href);
+      }
+    } catch { /* Product pages may block automated requests; the UI has a fallback. */ }
+    return '';
+  })();
+  productPageImageCache.set(cacheKey, { promise, expiresAt: Date.now() + 60_000, image: '' });
+  const image = await promise;
+  productPageImageCache.set(cacheKey, { image, expiresAt: Date.now() + (image ? 6 : 1) * 60 * 60_000 });
+  while (productPageImageCache.size > 500) productPageImageCache.delete(productPageImageCache.keys().next().value);
+  return image;
+}
+async function enrichMissingProductImages(products) {
+  const candidates = products.filter(product => !product.image && product.url).slice(0, 8);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(4, candidates.length) }, async () => {
+    while (next < candidates.length) {
+      const product = candidates[next++];
+      product.image = await fetchProductPageImage(product.url);
+    }
+  }));
+  return products;
+}
 function titleContainsToken(title, token) {
   if (!title || !token) return false;
   const cleanToken = String(token).trim().toLowerCase();
@@ -413,7 +579,7 @@ function groundProductRecord(item, source, position = 1, sceneContext = {}) {
     priceAmount: Number.isFinite(numericPrice) && numericPrice > 0 ? numericPrice : null,
     currency: currency || (/\$/.test(String(priceText)) ? 'USD' : /€/.test(String(priceText)) ? 'EUR' : /£/.test(String(priceText)) ? 'GBP' : /₹|\bINR\b|\bRs\.?/i.test(String(priceText)) ? 'INR' : ''),
     priceText: String(priceText || '').slice(0, 80),
-    image: item.thumbnail || item.image || '',
+    image: imageUrlFromProviderValue(item.thumbnail, parsed.href) || imageUrlFromProviderValue(item.image, parsed.href) || productImageFromJsonLdValue(item.schemas, parsed.href),
     match: matchBadge,
     matchType,
     matchReason,
@@ -1179,6 +1345,8 @@ async function searchProducts(query, { context = '', location = '', minPrice = '
       url: parsed.href,
       title: result.title,
       description: result.description,
+      thumbnail: result.thumbnail,
+      schemas: result.schemas,
       source: host
     }, 'Brave Search', index + 1, { brand, model, item: query, identityConfidence });
     if (!grounded) return [];
@@ -1889,6 +2057,7 @@ const server = http.createServer(async (req, res) => {
         const gate = await classifyProductRelevance(candidates, { ...job.relevanceContext, traceId: `${traceId}-${source.toLowerCase().replace(/[^a-z0-9]+/g, '-')}` });
         archiveProductRelevanceAudit(captureContext, traceId, productOfferQuery, gate.accepted, gate.rejected, gate.status);
         if (gate.accepted.length) {
+          await enrichMissingProductImages(gate.accepted);
           gate.accepted.forEach(product => enrichProductWithSceneContext(product, job.relevanceContext));
           job.products = mergeProductSources([{ name: 'Previously verified', products: job.products }, { name: source, products: gate.accepted }], Infinity, productOfferQuery, { traceId, primaryQuery: query });
           job.providersUsed = [...new Set([...job.providersUsed, source])];
@@ -2245,6 +2414,7 @@ const server = http.createServer(async (req, res) => {
         const gate = await classifyProductRelevance(candidates, { ...job.relevanceContext, traceId: `${retrievalTrace}-${source.toLowerCase().replace(/[^a-z0-9]+/g, '-')}` });
         archiveProductRelevanceAudit(analyzedFrames.get(scene.frameId)?.captureContext || {}, retrievalTrace, `${query} ${question}`, gate.accepted, gate.rejected, gate.status);
         if (gate.accepted.length) {
+          await enrichMissingProductImages(gate.accepted);
           job.products = mergeProductSources([{ name: 'Previously verified', products: job.products }, { name: source, products: gate.accepted }], Infinity, `${query} ${question}`, { traceId: retrievalTrace, primaryQuery: object });
           job.providersUsed = [...new Set([...job.providersUsed, source])];
           job.message = `${job.products.length} verified match${job.products.length === 1 ? '' : 'es'} so far; searching other sources…`;

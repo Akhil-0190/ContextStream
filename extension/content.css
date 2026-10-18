@@ -36,3 +36,9 @@
 #contextstream-root .cs-product-evidence strong{color:#34483a;font-size:11px;font-weight:700;letter-spacing:.01em}
 #contextstream-root .cs-product-evidence span{color:#58665a;font-size:11px;font-weight:400;line-height:1.55;overflow-wrap:anywhere}
 #contextstream-root .cs-product-description{margin-top:8px;padding:0 1px;color:#6b776c;font-size:11px;line-height:1.55}
+#contextstream-root .cs-product-image-wrap{display:flex;align-items:center;justify-content:center;width:100%;min-height:132px;aspect-ratio:16/10;margin-top:11px;padding:8px;overflow:hidden;border:1px solid #e5eae1;border-radius:10px;background:#f5f7f2}
+#contextstream-root .cs-product-image{display:block;width:100%;height:100%;max-height:190px;object-fit:contain;object-position:center;border-radius:6px}
+#contextstream-root .cs-product-image-fallback{display:flex;align-items:center;justify-content:center;width:100%;height:100%;min-height:116px;color:#778276;font-size:11px;font-weight:500;text-align:center;line-height:1.5}
+#contextstream-root .cs-product-image-fallback[hidden]{display:none}
+#contextstream-root .cs-product-image[hidden]{display:none}
+@media(max-width:380px){#contextstream-root .cs-product-image-wrap{min-height:112px;padding:6px}#contextstream-root .cs-product-image{max-height:155px}#contextstream-root .cs-product-image-fallback{min-height:100px}}
