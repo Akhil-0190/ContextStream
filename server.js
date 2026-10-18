@@ -3,6 +3,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const util = require('node:util');
+const dns = require('node:dns').promises;
+const net = require('node:net');
 
 const ROOT = __dirname;
 const PORT = Number(process.env.PORT || 8080);
@@ -322,31 +324,318 @@ function normalizeAnalyzedObjects(analyzed, frameId) {
   }
   return unique.sort((a, b) => Number(b.foreground) - Number(a.foreground) || ({ high: 0, medium: 1, low: 2 }[a.confidence] - { high: 0, medium: 1, low: 2 }[b.confidence]));
 }
-function normalizeSerpProduct(item, source, position) {
-  const rawUrl = item.product_link || item.link || item.url || item.serpapi_product_api || '';
+function cleanProductUrl(rawUrl) {
   let parsed;
   try { parsed = new URL(rawUrl); } catch { return null; }
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null;
+  const stripPrefixes = ['utm_'];
+  const stripKeys = new Set(['gclid', 'fbclid', 'dclid', '_ga', 'ncid', 'ref', 'ref_', 'pf_rd_r', 'pf_rd_p', 'pd_rd_r', 'pd_rd_w', 'pd_rd_wg']);
+  for (const key of [...parsed.searchParams.keys()]) {
+    const lower = key.toLowerCase();
+    if (stripKeys.has(lower) || stripPrefixes.some(p => lower.startsWith(p))) {
+      parsed.searchParams.delete(key);
+    }
+  }
+  return parsed;
+}
+const productPageImageCache = new Map();
+function isPublicImageFetchAddress(address) {
+  const family = net.isIP(address);
+  if (family === 4) {
+    const octets = address.split('.').map(Number);
+    const [a, b] = octets;
+    return !(a === 0 || a === 10 || a === 127 || a >= 224 || (a === 100 && b >= 64 && b <= 127) ||
+      (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) ||
+      (a === 198 && (b === 18 || b === 19)));
+  }
+  if (family === 6) {
+    const normalized = address.toLowerCase().split('%')[0];
+    if (normalized.startsWith('::ffff:')) return isPublicImageFetchAddress(normalized.slice(7));
+    return normalized !== '::' && normalized !== '::1' && !normalized.startsWith('fc') &&
+      !normalized.startsWith('fd') && !normalized.startsWith('fe8') && !normalized.startsWith('fe9') &&
+      !normalized.startsWith('fea') && !normalized.startsWith('feb') && !normalized.startsWith('ff');
+  }
+  return false;
+}
+async function validateProductPageImageFetchUrl(rawUrl) {
+  let parsed;
+  try { parsed = new URL(rawUrl); } catch { return null; }
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password || !parsed.hostname ||
+      parsed.hostname === 'localhost' || parsed.hostname.endsWith('.localhost') || parsed.hostname.endsWith('.local')) return null;
+  const literalFamily = net.isIP(parsed.hostname);
+  if (literalFamily) return isPublicImageFetchAddress(parsed.hostname) ? parsed : null;
+  try {
+    const addresses = await dns.lookup(parsed.hostname, { all: true, verbatim: true });
+    if (!addresses.length || addresses.some(entry => !isPublicImageFetchAddress(entry.address))) return null;
+  } catch { return null; }
+  return parsed;
+}
+function decodeProductHtmlValue(value) {
+  return String(value || '').replace(/&(?:amp|quot|apos|lt|gt);|&#(?:x[\da-f]+|\d+);/gi, entity => {
+    const named = { '&amp;': '&', '&quot;': '"', '&apos;': "'", '&lt;': '<', '&gt;': '>' };
+    if (named[entity.toLowerCase()]) return named[entity.toLowerCase()];
+    const hex = entity.match(/^&#x([\da-f]+);$/i);
+    const decimal = entity.match(/^&#(\d+);$/);
+    const point = hex ? parseInt(hex[1], 16) : decimal ? Number(decimal[1]) : NaN;
+    try { return Number.isFinite(point) ? String.fromCodePoint(point) : entity; } catch { return entity; }
+  }).trim();
+}
+function resolveProductPageImageUrl(rawImage, pageUrl) {
+  const value = decodeProductHtmlValue(typeof rawImage === 'object' && rawImage ? rawImage.url || rawImage['@id'] : rawImage);
+  if (!value || value.startsWith('data:')) return '';
+  try {
+    const parsed = new URL(value, pageUrl);
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? parsed.href : '';
+  } catch { return ''; }
+}
+function imageUrlFromProviderValue(value, pageUrl) {
+  if (typeof value === 'string') return resolveProductPageImageUrl(value, pageUrl);
+  if (Array.isArray(value)) {
+    for (const entry of value) { const image = imageUrlFromProviderValue(entry, pageUrl); if (image) return image; }
+    return '';
+  }
+  if (value && typeof value === 'object') {
+    for (const key of ['src', 'url', 'original', 'contentUrl', 'image']) {
+      const image = imageUrlFromProviderValue(value[key], pageUrl);
+      if (image) return image;
+    }
+  }
+  return '';
+}
+function productImageFromJsonLdValue(value, pageUrl) {
+  if (!value) return '';
+  const records = Array.isArray(value) ? value : [value];
+  for (const record of records) {
+    if (typeof record === 'string') {
+      const image = resolveProductPageImageUrl(record, pageUrl);
+      if (image) return image;
+    } else if (record && typeof record === 'object') {
+      const type = record['@type'];
+      const types = (Array.isArray(type) ? type : [type]).map(value => String(value || '').toLowerCase());
+      if (types.some(value => value === 'product' || value.endsWith('/product'))) {
+        const image = imageUrlFromProviderValue(record.image, pageUrl);
+        if (image) return image;
+      }
+      const nested = productImageFromJsonLdValue(record['@graph'] || record.itemListElement, pageUrl);
+      if (nested) return nested;
+    }
+  }
+  return '';
+}
+function extractProductPageImage(html, pageUrl) {
+  const jsonLdScripts = String(html || '').matchAll(/<script\b[^>]*type\s*=\s*(["'])application\/ld\+json\1[^>]*>([\s\S]*?)<\/script\s*>/gi);
+  for (const [, , source] of jsonLdScripts) {
+    try {
+      const image = productImageFromJsonLdValue(JSON.parse(source.replace(/^\s*<!--|-->\s*$/g, '')), pageUrl);
+      if (image) return image;
+    } catch { /* Ignore malformed or non-JSON-LD scripts. */ }
+  }
+  const metaTags = String(html || '').match(/<meta\b[^>]*>/gi) || [];
+  const meta = new Map();
+  for (const tag of metaTags) {
+    const attrs = new Map([...tag.matchAll(/([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g)].map(match => [match[1].toLowerCase(), decodeProductHtmlValue(match[2] ?? match[3] ?? match[4])]));
+    const key = (attrs.get('property') || attrs.get('name') || '').toLowerCase();
+    if (key && attrs.has('content')) meta.set(key, attrs.get('content'));
+  }
+  for (const key of ['og:image', 'og:image:url', 'twitter:image', 'twitter:image:src']) {
+    const image = resolveProductPageImageUrl(meta.get(key), pageUrl);
+    if (image) return image;
+  }
+  return '';
+}
+async function fetchProductPageImage(rawUrl) {
+  const initial = await validateProductPageImageFetchUrl(rawUrl);
+  if (!initial) return '';
+  const cacheKey = initial.href;
+  const cached = productPageImageCache.get(cacheKey);
+  if (cached?.promise) return cached.promise;
+  if (cached && cached.expiresAt > Date.now()) return cached.image;
+  const promise = (async () => {
+    let currentUrl = initial.href;
+    const signal = AbortSignal.timeout(3500);
+    try {
+      for (let redirect = 0; redirect <= 2; redirect++) {
+        const validated = await validateProductPageImageFetchUrl(currentUrl);
+        if (!validated) return '';
+        const response = await fetch(validated, {
+          redirect: 'manual',
+          headers: { accept: 'text/html,application/xhtml+xml;q=0.9', 'user-agent': 'ContextStream Product Image Preview/1.0' },
+          signal
+        });
+        if ([301, 302, 303, 307, 308].includes(response.status)) {
+          const location = response.headers.get('location');
+          if (!location || redirect === 2) return '';
+          currentUrl = new URL(location, validated).href;
+          continue;
+        }
+        if (!response.ok || !/^(text\/html|application\/xhtml\+xml)(;|$)/i.test(response.headers.get('content-type') || '')) return '';
+        const reader = response.body?.getReader();
+        if (!reader) return '';
+        const chunks = []; let size = 0;
+        while (size < 512 * 1024) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunk = value.subarray(0, 512 * 1024 - size);
+          chunks.push(chunk); size += chunk.byteLength;
+          if (chunk.byteLength !== value.byteLength) { await reader.cancel(); break; }
+        }
+        const html = Buffer.concat(chunks).toString('utf8');
+        return extractProductPageImage(html, validated.href);
+      }
+    } catch { /* Product pages may block automated requests; the UI has a fallback. */ }
+    return '';
+  })();
+  productPageImageCache.set(cacheKey, { promise, expiresAt: Date.now() + 60_000, image: '' });
+  const image = await promise;
+  productPageImageCache.set(cacheKey, { image, expiresAt: Date.now() + (image ? 6 : 1) * 60 * 60_000 });
+  while (productPageImageCache.size > 500) productPageImageCache.delete(productPageImageCache.keys().next().value);
+  return image;
+}
+async function enrichMissingProductImages(products) {
+  const candidates = products.filter(product => !product.image && product.url).slice(0, 8);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(4, candidates.length) }, async () => {
+    while (next < candidates.length) {
+      const product = candidates[next++];
+      product.image = await fetchProductPageImage(product.url);
+    }
+  }));
+  return products;
+}
+function titleContainsToken(title, token) {
+  if (!title || !token) return false;
+  const cleanToken = String(token).trim().toLowerCase();
+  if (cleanToken.length < 2) return false;
+  const regex = new RegExp(`(^|[^a-z0-9])${cleanToken.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9]|$)`, 'i');
+  return regex.test(String(title));
+}
+function groundProductRecord(item, source, position = 1, sceneContext = {}) {
+  const rawUrl = item.product_link || item.link || item.url || item.serpapi_product_api || '';
+  const parsed = cleanProductUrl(rawUrl);
+  if (!parsed) return null;
   const title = plainSearchText(item.title || item.name || '').slice(0, 240);
   if (!title) return null;
+
   const priceText = (typeof item.price === 'string' ? item.price : item.price?.value) || item.price_text || '';
   const extractedPrice = item.extracted_price ?? item.price?.extracted_value ?? null;
   const numericPrice = Number(extractedPrice);
   const currency = normalizeCurrencyCode(item.currency || item.price?.currency || '', '');
   const priceInr = Number.isFinite(numericPrice) && numericPrice > 0 && (!currency || currency === 'INR')
     ? numericPrice : extractInrPrice(String(priceText));
+
+  let priceVerification = 'unverified';
+  if (Number.isFinite(numericPrice) && numericPrice > 0) {
+    priceVerification = 'source_structured';
+  } else if (Number.isFinite(priceInr) && priceInr > 0) {
+    priceVerification = 'snippet_derived';
+  }
+
+  const inStock = typeof item.in_stock === 'boolean' ? item.in_stock : null;
+  const stockVerification = typeof item.in_stock === 'boolean' ? (item.in_stock ? 'in_stock' : 'out_of_stock') : 'unverified';
+  const delivery = String(item.delivery || '').slice(0, 160);
+  const deliveryVerification = delivery.trim().length > 0 ? 'stated' : 'unverified';
+
+  const brandClue = String(sceneContext.brand || '').trim();
+  const modelClue = String(sceneContext.model || '').trim();
+  const itemClue = String(sceneContext.item || sceneContext.label || '').trim();
+  const hasBrand = brandClue ? titleContainsToken(title, brandClue) : false;
+  const hasModel = modelClue ? titleContainsToken(title, modelClue) : false;
+  const isLens = String(source || '').toLowerCase().includes('lens');
+
+  let matchType = 'similar';
+  let matchConfidence = 0.50;
+  let identityVerification = 'unverified';
+  let matchReason = 'Similar alternative in same product category';
+  let matchBadge = isLens ? 'Visual search result · verify product page' : (source && source.includes('Shopping') ? 'Shopping result · listing details may change' : 'Live web result · verify details');
+
+  if (hasBrand && hasModel) {
+    matchType = 'exact';
+    matchConfidence = sceneContext.identityConfidence === 'high' ? 0.95 : 0.85;
+    identityVerification = 'confirmed';
+    matchReason = `Exact match: contains detected brand (${brandClue}) and model (${modelClue})`;
+    matchBadge = 'Exact brand and model text in listing';
+  } else if (hasBrand || isLens) {
+    matchType = 'supported';
+    matchConfidence = isLens ? 0.80 : 0.70;
+    identityVerification = 'probable';
+    matchReason = hasBrand
+      ? `Supported match: contains detected brand (${brandClue})`
+      : 'Visual lens match from frame crop';
+    matchBadge = isLens ? 'Visual lens match · verify product details' : 'Brand text in listing';
+  }
+
+  const category = (typeof productCategoryFamily === 'function' ? (productCategoryFamily(title) || productCategoryFamily(itemClue)) : '') || 'general';
+
   return {
     id: crypto.createHash('sha256').update(parsed.href).digest('hex').slice(0, 16),
-    title, description: plainSearchText(item.snippet || item.description || item.delivery || '').slice(0, 500),
-    url: parsed.href, retailer: String(item.source || parsed.hostname.replace(/^www\./, '')).slice(0, 100),
-    priceInr, priceAmount: Number.isFinite(numericPrice) && numericPrice > 0 ? numericPrice : null,
+    title,
+    description: plainSearchText(item.snippet || item.description || item.delivery || '').slice(0, 500),
+    brand: hasBrand ? brandClue : (item.brand || null),
+    model: hasModel ? modelClue : (item.model || null),
+    category,
+    url: parsed.href,
+    retailer: String(item.source || parsed.hostname.replace(/^www\./, '')).slice(0, 100),
+    priceInr,
+    priceAmount: Number.isFinite(numericPrice) && numericPrice > 0 ? numericPrice : null,
     currency: currency || (/\$/.test(String(priceText)) ? 'USD' : /€/.test(String(priceText)) ? 'EUR' : /£/.test(String(priceText)) ? 'GBP' : /₹|\bINR\b|\bRs\.?/i.test(String(priceText)) ? 'INR' : ''),
-    priceText: String(priceText || '').slice(0, 80), image: item.thumbnail || item.image || '',
-    match: source === 'Google Lens' ? 'Visual search result · verify product page' : 'Shopping result · listing details may change',
-    matchType: 'similar', position, source, rating: Number(item.rating) || null,
-    inStock: typeof item.in_stock === 'boolean' ? item.in_stock : null,
-    delivery: String(item.delivery || '').slice(0, 160)
+    priceText: String(priceText || '').slice(0, 80),
+    image: imageUrlFromProviderValue(item.thumbnail, parsed.href) || imageUrlFromProviderValue(item.image, parsed.href) || productImageFromJsonLdValue(item.schemas, parsed.href),
+    match: matchBadge,
+    matchType,
+    matchReason,
+    matchConfidence,
+    fieldVerification: {
+      identity: identityVerification,
+      price: priceVerification,
+      stock: stockVerification,
+      delivery: deliveryVerification
+    },
+    position,
+    source,
+    rating: Number(item.rating) || null,
+    inStock,
+    delivery,
+    retrievedAt: new Date().toISOString()
   };
+}
+function enrichProductWithSceneContext(product, sceneContext = {}) {
+  if (!product || !sceneContext) return product;
+  const brandClue = String(sceneContext.brand || '').trim();
+  const modelClue = String(sceneContext.model || '').trim();
+  if (!brandClue && !modelClue) return product;
+
+  const hasBrand = brandClue ? titleContainsToken(product.title, brandClue) : false;
+  const hasModel = modelClue ? titleContainsToken(product.title, modelClue) : false;
+  const isLens = String(product.source || '').toLowerCase().includes('lens');
+
+  if (hasBrand && hasModel) {
+    product.matchType = 'exact';
+    product.matchConfidence = sceneContext.identityConfidence === 'high' ? 0.95 : 0.85;
+    product.fieldVerification = {
+      ...(product.fieldVerification || {}),
+      identity: 'confirmed'
+    };
+    product.matchReason = `Exact match: contains detected brand (${brandClue}) and model (${modelClue})`;
+    product.match = 'Exact brand and model text in listing';
+    product.brand = brandClue;
+    product.model = modelClue;
+  } else if ((hasBrand || isLens) && product.matchType !== 'exact') {
+    product.matchType = 'supported';
+    product.matchConfidence = Math.max(product.matchConfidence || 0, isLens ? 0.80 : 0.70);
+    product.fieldVerification = {
+      ...(product.fieldVerification || {}),
+      identity: 'probable'
+    };
+    product.matchReason = hasBrand
+      ? `Supported match: contains detected brand (${brandClue})`
+      : 'Visual lens match from frame crop';
+    product.match = isLens ? 'Visual lens match · verify product details' : 'Brand text in listing';
+    if (hasBrand) product.brand = brandClue;
+  }
+  return product;
+}
+function normalizeSerpProduct(item, source, position, sceneContext = {}) {
+  return groundProductRecord(item, source, position, sceneContext);
 }
 async function attachDisplayPrices(products, preferredCurrency = 'INR', traceId = 'currency') {
   const target = normalizeCurrencyCode(preferredCurrency, 'INR');
@@ -759,18 +1048,78 @@ function mergeProductSources(sources, _limit = Infinity, query = '', { traceId =
     let existing = merged.get(normalized);
     if (!existing) {
       const titleKey = listingTitleKey(product.title);
-      if (titleKey.length >= 18) existing = [...merged.values()].find(candidate => listingTitleKey(candidate.title) === titleKey);
+      if (titleKey.length >= 18) {
+        // Coalesce by title only if from the same retailer/host so distinct merchant offers remain separate!
+        const host = (() => { try { return new URL(product.url).hostname.replace(/^www\./, ''); } catch { return ''; } })();
+        existing = [...merged.values()].find(candidate => {
+          try {
+            const candidateHost = new URL(candidate.url).hostname.replace(/^www\./, '');
+            return candidateHost && candidateHost === host && listingTitleKey(candidate.title) === titleKey;
+          } catch { return false; }
+        });
+      }
     }
     if (!existing && product.source === 'Gemini Google Search') {
-      existing = [...merged.values()].find(candidate => candidate.source === 'Google Shopping' && sameProductTitle(candidate.title, product.title));
+      existing = [...merged.values()].find(candidate => candidate.source && candidate.source.includes('Shopping') && sameProductTitle(candidate.title, product.title));
     }
     if (existing) {
       existing.sources = [...new Set([...(existing.sources || [existing.source]), product.source || name])];
-      if (existing.priceInr == null && product.priceInr != null) { existing.priceInr = product.priceInr; existing.priceText = product.priceText || ''; }
-      if (existing.priceAmount == null && product.priceAmount != null) { existing.priceAmount = product.priceAmount; existing.currency = product.currency || existing.currency; existing.priceText = product.priceText || existing.priceText; }
+      // Price enrichment: prefer structured price over snippet-derived price
+      if (product.fieldVerification?.price === 'source_structured' && existing.fieldVerification?.price !== 'source_structured') {
+        existing.priceInr = product.priceInr;
+        existing.priceAmount = product.priceAmount;
+        existing.currency = product.currency || existing.currency;
+        existing.priceText = product.priceText || existing.priceText;
+        if (existing.fieldVerification) existing.fieldVerification.price = 'source_structured';
+      } else if (existing.priceInr == null && product.priceInr != null) {
+        existing.priceInr = product.priceInr;
+        existing.priceText = product.priceText || '';
+        if (product.priceAmount != null) {
+          existing.priceAmount = product.priceAmount;
+          existing.currency = product.currency || existing.currency;
+        }
+        if (existing.fieldVerification && product.fieldVerification) {
+          existing.fieldVerification.price = product.fieldVerification.price;
+        }
+      }
+
+      // Stock & delivery enrichment
+      if (existing.fieldVerification?.stock === 'unverified' && product.fieldVerification?.stock && product.fieldVerification.stock !== 'unverified') {
+        existing.inStock = product.inStock;
+        existing.fieldVerification.stock = product.fieldVerification.stock;
+      }
+      if (existing.fieldVerification?.delivery === 'unverified' && product.fieldVerification?.delivery && product.fieldVerification.delivery !== 'unverified') {
+        existing.delivery = product.delivery;
+        existing.fieldVerification.delivery = product.fieldVerification.delivery;
+      }
+
+      // Multi-provider corroboration: if both visual Lens and a Shopping offer agree
+      const hasLens = existing.sources.some(s => s.toLowerCase().includes('lens'));
+      const hasShopping = existing.sources.some(s => s.toLowerCase().includes('shopping'));
+      if (hasLens && hasShopping && existing.fieldVerification) {
+        existing.fieldVerification.identity = (existing.matchType === 'exact' || product.matchType === 'exact') ? 'confirmed' : 'probable';
+      }
+
+      // Upgrade matchType if product brings stronger evidence
+      if (product.matchType === 'exact' && existing.matchType !== 'exact') {
+        existing.matchType = 'exact';
+        existing.matchConfidence = Math.max(existing.matchConfidence || 0, product.matchConfidence || 0.85);
+        existing.matchReason = product.matchReason || existing.matchReason;
+        existing.match = product.match;
+        if (existing.fieldVerification) existing.fieldVerification.identity = 'confirmed';
+      } else if (product.matchType === 'supported' && existing.matchType === 'similar') {
+        existing.matchType = 'supported';
+        existing.matchConfidence = Math.max(existing.matchConfidence || 0, product.matchConfidence || 0.70);
+        existing.matchReason = product.matchReason || existing.matchReason;
+        existing.match = product.match;
+        if (existing.fieldVerification && existing.fieldVerification.identity === 'unverified') {
+          existing.fieldVerification.identity = 'probable';
+        }
+      }
+
       if (!existing.image && product.image) existing.image = product.image;
       if ((!existing.description || existing.description.length < 80) && product.description) existing.description = product.description;
-      if (product.source === 'Gemini Google Search' && existing.source === 'Google Shopping') existing.groundedUrl = product.url;
+      if (product.source === 'Gemini Google Search' && existing.source && existing.source.includes('Shopping')) existing.groundedUrl = product.url;
       continue;
     }
     merged.set(normalized, { ...product, sources: [product.source || name] });
@@ -793,7 +1142,9 @@ function mergeProductSources(sources, _limit = Infinity, query = '', { traceId =
     const discussionMismatch = [...discussionTerms].some(token => titleAndRetailer.has(token)) ? 22 : 0;
     const missingPrimary = primaryTokens.length && !primaryOverlap ? 18 : 0;
     const directProductPage = /\/(?:dp|ip|itm|product|products|p|item)\//i.test(new URL(product.url).pathname) ? 12 : 0;
-    product._rankScore = Math.min(primaryOverlap, 5) * 18 + Math.min(overlap, 12) * 3 + directProductPage + (product.priceInr != null ? 6 : 0) + (product.image ? 2 : 0) + Math.min(3, Math.max(0, (product.sources?.length || 1) - 1)) * 15 - accessoryMismatch - discussionMismatch - missingPrimary - Math.max(0, Number(product.position) || 0) * 0.1;
+    const exactBonus = (product.matchType === 'exact' || product.matchType === 'exact_text') ? 24 : (product.matchType === 'supported' ? 12 : 0);
+    const multiProviderBonus = Math.min(3, Math.max(0, (product.sources?.length || 1) - 1)) * 15;
+    product._rankScore = Math.min(primaryOverlap, 5) * 18 + Math.min(overlap, 12) * 3 + directProductPage + exactBonus + (product.priceInr != null ? 6 : 0) + (product.image ? 2 : 0) + multiProviderBonus - accessoryMismatch - discussionMismatch - missingPrimary - Math.max(0, Number(product.position) || 0) * 0.1;
     return product;
   });
   result.sort((a, b) => b._rankScore - a._rankScore || a.position - b.position);
@@ -990,18 +1341,17 @@ async function searchProducts(query, { context = '', location = '', minPrice = '
     if (!['https:', 'http:'].includes(parsed.protocol) || !result.title || seen.has(parsed.href)) return [];
     seen.add(parsed.href);
     const host = parsed.hostname.replace(/^www\./, '');
-    return [{
-      id: crypto.createHash('sha256').update(parsed.href).digest('hex').slice(0, 16),
-      title: plainSearchText(result.title).slice(0, 240),
-      description: plainSearchText(result.description).slice(0, 500),
+    const grounded = groundProductRecord({
       url: parsed.href,
-      retailer: host,
-      priceInr: extractInrPrice(`${result.title} ${result.description}`),
-      match: 'Similar product result',
-      matchType: 'similar',
-      position: index + 1,
-      queryVariant: result._queryIndex || 0
-    }];
+      title: result.title,
+      description: result.description,
+      thumbnail: result.thumbnail,
+      schemas: result.schemas,
+      source: host
+    }, 'Brave Search', index + 1, { brand, model, item: query, identityConfidence });
+    if (!grounded) return [];
+    grounded.queryVariant = result._queryIndex || 0;
+    return [grounded];
   });
   const brandTokens = searchTokens(brand);
   const modelTokens = searchTokens(model);
@@ -1021,10 +1371,14 @@ async function searchProducts(query, { context = '', location = '', minPrice = '
     product.priceStatus = Number(maxPrice) > 0 || Number(minPrice) > 0 ? product.priceInr === null ? 'price_not_shown' : product.priceInr > Number(maxPrice || Infinity) ? 'over_limit' : product.priceInr < Number(minPrice || 0) ? 'under_limit' : 'within_limit' : '';
     if (exactIdentitySupported && brandMatched && modelMatched) {
       product.match = 'Exact brand and model text in listing';
-      product.matchType = 'exact_text';
+      product.matchType = 'exact';
+      product.matchReason = `Exact match: contains detected brand (${brand}) and model (${model})`;
+      if (product.fieldVerification) product.fieldVerification.identity = 'confirmed';
     } else if (brandMatched) {
       product.match = 'Brand text in listing';
-      product.matchType = 'brand_text';
+      product.matchType = 'supported';
+      product.matchReason = `Supported match: contains detected brand (${brand})`;
+      if (product.fieldVerification && product.fieldVerification.identity === 'unverified') product.fieldVerification.identity = 'probable';
     }
   }
   // A profile's preferred ceiling is a ranking hint, not a reason to hide a
@@ -1032,10 +1386,10 @@ async function searchProducts(query, { context = '', location = '', minPrice = '
   // but keep over/under-range candidates available if the market has no fit.
   const eligibleProducts = products;
   const pricePriority = { within_limit: 0, '': 0, price_not_shown: 1, over_limit: 2, under_limit: 2 };
-  eligibleProducts.sort((a, b) => (pricePriority[a.priceStatus] ?? 1) - (pricePriority[b.priceStatus] ?? 1) || ({ exact_text: 0, brand_text: 1, similar: 2 }[a.matchType] - { exact_text: 0, brand_text: 1, similar: 2 }[b.matchType]) || b._relevance - a._relevance || a.position - b.position);
+  eligibleProducts.sort((a, b) => (pricePriority[a.priceStatus] ?? 1) - (pricePriority[b.priceStatus] ?? 1) || (({ exact: 0, exact_text: 0, supported: 1, brand_text: 1, similar: 2 }[a.matchType] ?? 2) - ({ exact: 0, exact_text: 0, supported: 1, brand_text: 1, similar: 2 }[b.matchType] ?? 2)) || b._relevance - a._relevance || a.position - b.position);
   for (const product of products) delete product._relevance;
   const rankedProducts = eligibleProducts;
-  console.log(`[Search] ${alternativeMode ? 'Alternative' : exactIdentitySupported ? 'Exact-identity' : 'Visual-cue'} retrieval across ${searchQueries.length} query variants returned ${rankedProducts.length} listing(s), ${rankedProducts.filter(product => product.matchType === 'exact_text').length} with matching brand+model text.`);
+  console.log(`[Search] ${alternativeMode ? 'Alternative' : exactIdentitySupported ? 'Exact-identity' : 'Visual-cue'} retrieval across ${searchQueries.length} query variants returned ${rankedProducts.length} listing(s), ${rankedProducts.filter(product => ['exact', 'exact_text'].includes(product.matchType)).length} with matching brand+model text.`);
   console.log(`[Search] Ranked listings: ${rankedProducts.map(product => `${product.title} (${product.url})`).join(' | ') || '(none)'}`);
   for (const product of products) delete product.queryVariant;
   return { products: rankedProducts, provider: 'Brave Search', searchedAt: new Date().toISOString(), searchesRemainingThisMonth: remaining, searchQuery: searchQueries.join(' | '), exactIdentitySupported, priceLimit: Number(maxPrice) > 0 ? Number(maxPrice) : null, alternativeMode };
@@ -1180,8 +1534,22 @@ Current request: ${JSON.stringify(question || 'Find the closest live product lis
         const cite = citations.find(entry => entry.url === parsedUrl.href);
         const priceText = String(item.priceText || '').trim();
         const priceSupported = priceText && cite?.citedText && cite.citedText.toLowerCase().includes(priceText.toLowerCase());
-        const host = parsedUrl.hostname.replace(/^www\./, '');
-        return [{ id: crypto.createHash('sha256').update(parsedUrl.href).digest('hex').slice(0, 16), title: plainSearchText(item.title).slice(0, 240), description: plainSearchText([item.description, item.rationale].filter(Boolean).join(' · ')).slice(0, 500), url: parsedUrl.href, retailer: host, priceInr: priceSupported ? extractInrPrice(priceText) : null, match: item.matchType === 'exact' ? 'Grounded candidate · exact design claim requires retailer verification' : 'Grounded similar product result', matchType: 'similar', position: index + 1, source: 'Gemini Google Search' }];
+        const grounded = groundProductRecord({
+          url: parsedUrl.href,
+          title: item.title,
+          description: [item.description, item.rationale].filter(Boolean).join(' · '),
+          source: host,
+          priceText: priceSupported ? priceText : '',
+          extracted_price: priceSupported ? extractInrPrice(priceText) : null
+        }, 'Gemini Google Search', index + 1, { brand: scene?.brand, model: scene?.model, item: query, identityConfidence: scene?.identityConfidence });
+        if (!grounded) return [];
+        if (item.matchType === 'exact') {
+          grounded.matchType = 'exact';
+          grounded.matchReason = 'Grounded citation candidate with verified retailer URL';
+          grounded.fieldVerification.identity = 'confirmed';
+          grounded.match = 'Grounded candidate · exact design claim requires retailer verification';
+        }
+        return [grounded];
       });
       console.log(`[${requestId}] Grounded search succeeded with ${items.length} citation-validated product page(s), ${citations.length} citations, and ${executedQueries.length} Google query/queries.`);
       console.log(`[${requestId}] Grounded listings: ${items.map(item => `${item.title} (${item.url})`).join(' | ') || '(none)'}`);
@@ -1685,9 +2053,12 @@ const server = http.createServer(async (req, res) => {
         const existingIds = new Set(job.products.map(product => product.id));
         const candidates = mergeProductSources([{ name: source, products }], Infinity, productOfferQuery, { traceId, primaryQuery: query }).filter(product => !existingIds.has(product.id));
         if (!candidates.length) return;
+        candidates.forEach(product => enrichProductWithSceneContext(product, job.relevanceContext));
         const gate = await classifyProductRelevance(candidates, { ...job.relevanceContext, traceId: `${traceId}-${source.toLowerCase().replace(/[^a-z0-9]+/g, '-')}` });
         archiveProductRelevanceAudit(captureContext, traceId, productOfferQuery, gate.accepted, gate.rejected, gate.status);
         if (gate.accepted.length) {
+          await enrichMissingProductImages(gate.accepted);
+          gate.accepted.forEach(product => enrichProductWithSceneContext(product, job.relevanceContext));
           job.products = mergeProductSources([{ name: 'Previously verified', products: job.products }, { name: source, products: gate.accepted }], Infinity, productOfferQuery, { traceId, primaryQuery: query });
           job.providersUsed = [...new Set([...job.providersUsed, source])];
           job.message = `${job.products.length} verified match${job.products.length === 1 ? '' : 'es'} so far; searching other sources…`;
@@ -1711,6 +2082,7 @@ const server = http.createServer(async (req, res) => {
         scene.evidence = [scene.evidence, mark.evidence].filter(Boolean).join(' ');
         job.relevanceContext = { item: query, brand: scene.brand, model: scene.model, evidence: scene.evidence, visibleText: scene.visibleText, details: scene.details, intent: productOfferQuery };
         job.identityUpdate = { brand: scene.brand, model: scene.model, visibleText: scene.visibleText, details: scene.details, identityConfidence: scene.identityConfidence, evidence: mark.evidence, ...(mark.bbox.length ? { bbox: mark.bbox } : {}) };
+        if (Array.isArray(job.products)) job.products.forEach(product => enrichProductWithSceneContext(product, job.relevanceContext));
         job.message = mark.bbox.length ? 'A tighter object box is ready; preparing the focused Lens crop…' : 'Checking matches against the extra visual details…';
         job.updatedAt = Date.now();
       };
@@ -2042,6 +2414,7 @@ const server = http.createServer(async (req, res) => {
         const gate = await classifyProductRelevance(candidates, { ...job.relevanceContext, traceId: `${retrievalTrace}-${source.toLowerCase().replace(/[^a-z0-9]+/g, '-')}` });
         archiveProductRelevanceAudit(analyzedFrames.get(scene.frameId)?.captureContext || {}, retrievalTrace, `${query} ${question}`, gate.accepted, gate.rejected, gate.status);
         if (gate.accepted.length) {
+          await enrichMissingProductImages(gate.accepted);
           job.products = mergeProductSources([{ name: 'Previously verified', products: job.products }, { name: source, products: gate.accepted }], Infinity, `${query} ${question}`, { traceId: retrievalTrace, primaryQuery: object });
           job.providersUsed = [...new Set([...job.providersUsed, source])];
           job.message = `${job.products.length} verified match${job.products.length === 1 ? '' : 'es'} so far; searching other sources…`;
@@ -2084,4 +2457,20 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'content-type': types[ext] || 'application/octet-stream', 'x-content-type-options': 'nosniff' }); res.end(content);
     } catch (error) { console.error(`[HTTP ${requestId}] Handler failed for ${req.method} ${requestPath}: ${error.stack || error.message}`); json(res, error.status || 400, { error: error.message || 'Bad request' }); }
 });
-server.listen(PORT, HOST, () => console.log(`ContextStream ready on ${HOST}:${PORT}; Gemini keys ${getProviderKeys('gemini').length}; Brave Search keys ${getProviderKeys('brave').length}; SerpApi keys ${getProviderKeys('serpapi').length}; Gemini model profile ${GEMINI_MODEL_PROFILE}; OpenRouter disabled.`));
+if (require.main === module) {
+  server.listen(PORT, HOST, () => console.log(`ContextStream ready on ${HOST}:${PORT}; Gemini keys ${getProviderKeys('gemini').length}; Brave Search keys ${getProviderKeys('brave').length}; SerpApi keys ${getProviderKeys('serpapi').length}; Gemini model profile ${GEMINI_MODEL_PROFILE}; OpenRouter disabled.`));
+}
+
+module.exports = {
+  cleanProductUrl,
+  titleContainsToken,
+  groundProductRecord,
+  enrichProductWithSceneContext,
+  normalizeSerpProduct,
+  mergeProductSources,
+  productCandidateRejection,
+  productCategoryMismatch,
+  productCategoryFamily,
+  extractInrPrice,
+  server
+};

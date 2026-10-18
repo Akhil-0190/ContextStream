@@ -43,6 +43,35 @@ The optional maximum price is added as a search constraint. A "cheaper" follow-u
 - `POST /api/followup` with `{profileId, object, question, messages?, listings?, referencePrice?}`; a general intent planner uses the selected item, recent conversation, current listings, and saved profile. A profile's current location and budget are loaded server-side for every search.
 - `GET|POST /api/provider-keys` and `DELETE /api/provider-keys/:id` for local, encrypted provider key management (disabled on Cloud Run).
 
+## Grounded Product Catalog Layer
+
+ContextStream transforms live multi-provider search results into a normalized, evidence-grounded product catalog:
+
+### Normalized Product Record Contract
+
+Every product returned by `/api/search` and `/api/followup` conforms to the grounded catalog contract:
+- `id`: Stable deterministic hash of product URL and offer ID.
+- `title`, `brand`, `model`, `category`: Normalized product identifiers.
+- `url`: Sanitized HTTP(S) retailer product link stripped of tracking tags (`utm_*`, `gclid`).
+- `retailer`: Source merchant or host platform.
+- `priceAmount`, `currency`, `priceInr`, `displayPrice`, `displayCurrency`, `displayPriceApproximate`: Numeric pricing with FX currency conversion support.
+- `matchType`: `'exact'` (confirmed brand and model), `'supported'` (matching brand or visual Lens match), or `'similar'` (category alternative).
+- `matchReason`: Plain-language justification for the match.
+- `fieldVerification`: Field-specific evidence flags distinguishing structured provider feeds from snippet extractions:
+  - `identity`: `'confirmed' | 'probable' | 'unverified'`
+  - `price`: `'source_structured' | 'snippet_derived' | 'unverified'`
+  - `stock`: `'in_stock' | 'out_of_stock' | 'unverified'`
+  - `delivery`: `'stated' | 'unverified'`
+- `retrievedAt`: ISO timestamp of retrieval.
+
+### Verification and Test Suite
+
+Run the reproducible test suite verifying catalog normalization, URL sanitization, category mismatch filters, and multi-provider deduplication:
+
+```powershell
+npm test
+```
+
 ## Current limits
 
 ### Developer activity log
