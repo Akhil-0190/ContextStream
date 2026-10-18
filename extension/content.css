@@ -42,3 +42,8 @@
 #contextstream-root .cs-product-image-fallback[hidden]{display:none}
 #contextstream-root .cs-product-image[hidden]{display:none}
 @media(max-width:380px){#contextstream-root .cs-product-image-wrap{min-height:112px;padding:6px}#contextstream-root .cs-product-image{max-height:155px}#contextstream-root .cs-product-image-fallback{min-height:100px}}
+#contextstream-root .cs-paged-products{display:grid;gap:10px;margin:12px 0}
+#contextstream-root .cs-product{border:1px solid #dce5d8;border-radius:12px;background:#fff;padding:13px;box-shadow:0 2px 7px #17211b0c;transition:border-color .15s ease,box-shadow .15s ease}
+#contextstream-root .cs-product:hover{border-color:#aebfa6;box-shadow:0 4px 12px #17211b14}
+#contextstream-root .cs-product:focus-visible{outline:2px solid #6d994e;outline-offset:2px}
+#contextstream-root #cs-chat-results .cs-product{margin:0}

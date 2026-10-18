@@ -129,7 +129,7 @@
       ${(discoveries.length||historySessions.length)?`<nav class="cs-result-tabs" aria-label="Analysis results"><button id="cs-current-tab" class="${activeResultsView==='current'?'active':''}">${visualSessionId?'This session':'Current frame'}</button><button id="cs-history-tab" class="${activeResultsView==='history'?'active':''}" ${historySessions.length?'':'disabled'}>Previous frames${historySessions.length?` (${historySessions.length})`:''}</button></nav>`:''}
       ${activeResultsView==='history'&&historySessions.length?`<div class="cs-history-list">${historySessions.map(session=>`<button class="cs-history-item ${session.id===activeHistoryId?'active':''}" data-session-id="${esc(session.id)}"><span>${esc(session.title||'Video frame')}</span><small>${esc(session.timeLabel)} · ${session.discoveries.length} item${session.discoveries.length===1?'':'s'}</small></button>`).join('')}<button class="cs-clear-history" id="cs-clear-history">Clear previous frames</button></div>${selectedSession?`<p class="cs-session-label">${esc(selectedSession.title||'Previous frame')} · ${esc(selectedSession.timeLabel)}</p>`:''}`:''}
       ${shownDiscoveries.length?`<section><h3>${activeResultsView==='history'?'Items in previous frame':visualSessionId?'Items seen in this session':'Items in this frame'}</h3>${shownDiscoveries.map(d=>`<article class="cs-discovery"><button class="cs-object ${selected?.id===d.id?'selected':''}" data-id="${esc(d.id)}"><span>${esc(displayDiscoveryLabel(d,shownDiscoveries))}</span><small>${esc(d.confidence)} visual confidence · ${d.source==='discussed'?'Discussed':'Visual match'}${Number.isFinite(d.firstSeenVideoTime)?` · first seen ${frameTimeLabel(d.firstSeenVideoTime)}`:''}${d.observationTimes?.length>1?` · seen ${d.observationTimes.length} times`:''}</small></button>${d.brand||d.model?`<p class="cs-identity" data-cs-identity>Possible identity: ${esc([d.brand,d.model].filter(Boolean).join(' '))} · ${esc(d.identityConfidence||'low')} confidence</p>`:''}${d.visibleText?.length?`<p class="cs-evidence" data-cs-text>Text seen: ${esc(d.visibleText.join(', '))}</p>`:''}${selected?.id===d.id?`${d.evidence?`<p class="cs-evidence" data-cs-evidence>${esc(d.evidence)}</p>`:''}<div class="cs-live-results" data-live-results="${esc(d.id)}">${renderLiveResults(d)}</div>`:'<p class="cs-no-match">Select to find live listings.</p>'}</article>`).join('')}</section>`:activeResultsView==='history'?'<p class="cs-no-match">Choose a previous frame above.</p>':discoveries.length===0?'<p class="cs-no-match">Analyze a frame to see its discoveries here.</p>':''}
-      <section class="cs-follow"><h3>Ask about an object</h3><p>${selected?`Selected: <b>${esc(selected.label)}</b>`:'Select a discovery to ask a follow-up.'}</p><form id="cs-chat"><input name="q" placeholder="Find a cheaper similar lamp…" ${selected?'':'disabled'}><button ${selected?'':'disabled'}>Ask</button></form><div id="cs-chat-results"></div></section>
+      <section class="cs-follow"><h3>Ask about an object</h3><p>${selected?`Selected: <b>${esc(presentationCaseLabel(selected.label))}</b>`:'Select a discovery to ask a follow-up.'}</p><form id="cs-chat"><input name="q" placeholder="Find a cheaper similar lamp…" ${selected?'':'disabled'}><button ${selected?'':'disabled'}>Ask</button></form><div id="cs-chat-results"></div></section>
       <details class="cs-preferences"><summary>${profileId?'Optional profile · Connected':'Connect optional preferences'}</summary><p><a href="${esc(API)}/#preferences" target="_blank" rel="noopener noreferrer">Open ContextStream profile and preferences ↗</a></p><form id="cs-profile"><input id="cs-profile-id" name="id" value="${esc(profileId)}" placeholder="Profile code"><button>Connect</button></form><small>Location and budget shape live searches. Local results do not confirm store stock; verify price and availability with the retailer.</small></details>
       <footer>Live web results · prices and availability are checked on the retailer’s page.</footer>`;
     box.querySelector('#cs-analyze').onclick=analyze;
@@ -176,11 +176,15 @@
   function normalizedSessionLabel(value) {
     return String(value||'').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim();
   }
+  function presentationCaseLabel(value) {
+    return String(value||'').replace(/(^|[\s-])([\p{L}\p{N}])/gu,(_,separator,letter)=>separator+letter.toLocaleUpperCase());
+  }
   function displayDiscoveryLabel(discovery, allDiscoveries) {
     const sameLabel=(allDiscoveries||[]).filter(item=>normalizedSessionLabel(item.label)===normalizedSessionLabel(discovery.label));
-    if(sameLabel.length<2||!Array.isArray(discovery.bbox)||discovery.bbox.length!==4)return discovery.label;
+    const label=presentationCaseLabel(discovery.label);
+    if(sameLabel.length<2||!Array.isArray(discovery.bbox)||discovery.bbox.length!==4)return label;
     const centerX=(Number(discovery.bbox[0])+Number(discovery.bbox[2]))/2;
-    return `${discovery.label} · ${centerX<0.5?'left':'right'}`;
+    return `${label} · ${centerX<0.5?'left':'right'}`;
   }
   function mergeSessionDiscoveries(incoming) {
     for(const item of incoming){
