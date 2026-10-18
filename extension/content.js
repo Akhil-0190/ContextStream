@@ -85,8 +85,8 @@
   function invite() {
     if (inviteDismissed || !document.querySelector('ytd-watch-flexy') || root.querySelector('.cs-panel.open') || document.querySelector('#contextstream-invite')) return;
     const el = document.createElement('div'); el.id='contextstream-invite'; el.setAttribute('role','status');
-    el.style.cssText='position:fixed;z-index:2147483647;right:18px;top:92px;display:flex;align-items:center;gap:10px;width:max-content;max-width:min(320px,calc(100vw - 36px));padding:7px 9px 7px 12px;border:1px solid #456351;border-radius:12px;background:#13271d;color:#fff;box-shadow:0 5px 20px #0005;font:600 11px/1.4 system-ui,sans-serif;pointer-events:auto';
-    el.innerHTML=`<span>To analyze a frame, click the ContextStream toolbar icon.</span><button class="cs-invite-x" aria-label="Dismiss" style="border:0;background:transparent;color:#fff;cursor:pointer;font:18px/1 system-ui,sans-serif;padding:0 2px">×</button>`;
+    el.style.cssText='position:fixed;z-index:2147483647;right:18px;top:92px;display:flex;align-items:center;gap:10px;width:max-content;max-width:min(320px,calc(100vw - 36px));padding:7px 9px 7px 12px;border:1px solid #456351;border-radius:12px;background:#13271d;color:#fff;box-shadow:0 5px 20px #0005;font:600 11px/1.5 Poppins,ui-sans-serif,system-ui,sans-serif;pointer-events:auto';
+    el.innerHTML=`<span>To analyze a frame, click the ContextStream toolbar icon.</span><button class="cs-invite-x" aria-label="Dismiss" style="border:0;background:transparent;color:#fff;cursor:pointer;font:18px/1 Poppins,ui-sans-serif,system-ui,sans-serif;padding:0 2px">×</button>`;
     document.documentElement.appendChild(el);
     el.querySelector('.cs-invite-x').onclick=()=>{ inviteDismissed=true; trackAction('watch-page-invite.dismissed'); el.remove(); };
   }
@@ -288,7 +288,7 @@
     const evidenceText=product.matchReason||product.relevanceNote||'';
     const stockNote=product.fieldVerification?.stock==='in_stock'?' · in stock':(product.fieldVerification?.stock==='out_of_stock'?' · out of stock':'');
     const deliveryNote=product.fieldVerification?.delivery==='stated'&&product.delivery?` · ${esc(product.delivery)}`:'';
-    return `<button class="cs-product" data-url="${esc(product.url)}"><span>${badgeHtml}${esc(product.title)}</span><small>${esc(product.retailer)}${esc(priceNote)}${stockNote}${deliveryNote}${offerNote}${esc(provenance)}</small>${evidenceText?`<em>Match evidence: ${esc(evidenceText)}</em>`:''}${product.description?`<em>${esc(product.description)}</em>`:''}</button>`;
+    return `<button class="cs-product" data-url="${esc(product.url)}"><span class="cs-product-title">${badgeHtml}${esc(product.title)}</span><span class="cs-product-retailer">${esc(product.retailer||'Product website')}</span><span class="cs-product-meta">${esc(priceNote)}${stockNote}${deliveryNote}${offerNote}${esc(provenance)}</span>${evidenceText?`<span class="cs-product-evidence"><strong>Matched Evidence</strong><span>${esc(evidenceText)}</span></span>`:''}${product.description?`<span class="cs-product-description">${esc(product.description)}</span>`:''}</button>`;
   }
   function bindLiveProductLinks(container){container.querySelectorAll('[data-url]').forEach(button=>button.onclick=()=>{const url=button.dataset.url;if(!url)return;window.open(url,'_blank','noopener,noreferrer');if(selected){const product=(followupListings.length?followupListings:selected.products||[]).find(item=>item.url===url);saveDiscoveryContext(selected,{openedProductUrl:url,products:product?[{...product,interactions:['opened']}]:[]});}});}
   function priceFromListing(product){const numeric=Number(product?.priceInr);if(Number.isFinite(numeric)&&numeric>0)return numeric;const text=`${product?.title||''} ${product?.description||''}`;const match=text.match(/(?:₹\s*|\bINR\s*|\bRs\.?\s*)([\d,]+(?:\.\d{1,2})?)/i);return match?Number(match[1].replace(/,/g,''))||0:0;}

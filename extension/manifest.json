@@ -5,6 +5,7 @@
   "description": "Explore objects in YouTube videos when you choose.",
   "permissions": ["activeTab", "storage", "scripting", "tabCapture", "offscreen"],
   "host_permissions": ["https://www.youtube.com/*", "http://localhost:8080/*", "http://127.0.0.1:8080/*"],
+  "web_accessible_resources": [{ "resources": ["fonts/*.ttf"], "matches": ["https://www.youtube.com/*"] }],
   "action": { "default_title": "Analyze this YouTube frame with ContextStream", "default_popup": "popup.html" },
   "background": { "service_worker": "background.js" },
   "content_scripts": [{ "matches": ["https://www.youtube.com/watch*"], "js": ["content.js"], "css": ["content.css"], "run_at": "document_idle" }]
