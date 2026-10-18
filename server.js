@@ -2287,4 +2287,20 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'content-type': types[ext] || 'application/octet-stream', 'x-content-type-options': 'nosniff' }); res.end(content);
     } catch (error) { console.error(`[HTTP ${requestId}] Handler failed for ${req.method} ${requestPath}: ${error.stack || error.message}`); json(res, error.status || 400, { error: error.message || 'Bad request' }); }
 });
-server.listen(PORT, HOST, () => console.log(`ContextStream ready on ${HOST}:${PORT}; Gemini keys ${getProviderKeys('gemini').length}; Brave Search keys ${getProviderKeys('brave').length}; SerpApi keys ${getProviderKeys('serpapi').length}; Gemini model profile ${GEMINI_MODEL_PROFILE}; OpenRouter disabled.`));
+if (require.main === module) {
+  server.listen(PORT, HOST, () => console.log(`ContextStream ready on ${HOST}:${PORT}; Gemini keys ${getProviderKeys('gemini').length}; Brave Search keys ${getProviderKeys('brave').length}; SerpApi keys ${getProviderKeys('serpapi').length}; Gemini model profile ${GEMINI_MODEL_PROFILE}; OpenRouter disabled.`));
+}
+
+module.exports = {
+  cleanProductUrl,
+  titleContainsToken,
+  groundProductRecord,
+  enrichProductWithSceneContext,
+  normalizeSerpProduct,
+  mergeProductSources,
+  productCandidateRejection,
+  productCategoryMismatch,
+  productCategoryFamily,
+  extractInrPrice,
+  server
+};
