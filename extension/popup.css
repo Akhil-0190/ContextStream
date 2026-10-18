@@ -1,0 +1,9 @@
+* { box-sizing: border-box; }
+body { width: 300px; margin: 0; padding: 18px; background: #f6f7f2; color: #183126; font: 14px/1.45 system-ui, sans-serif; }
+h1 { margin: 0 0 10px; font-size: 17px; }
+p { min-height: 40px; margin: 0 0 14px; color: #647167; }
+button { width: 100%; border: 0; border-radius: 22px; padding: 12px 14px; background: #c5f56b; color: #1b2a17; font: inherit; font-weight: 700; cursor: pointer; }
+button:disabled { opacity: .65; cursor: wait; }
+button.secondary { margin-top: 8px; border: 1px solid #cad6c1; background: #fff; color: #263a2c; }
+a { display: block; margin-top: 14px; color: #506b39; text-align: center; font-size: 12px; font-weight: 650; text-decoration: none; }
+a:hover { text-decoration: underline; }
