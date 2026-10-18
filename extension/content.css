@@ -25,3 +25,7 @@
 @media(max-width:600px){#contextstream-root{width:min(350px,calc(100vw - 16px))}}
 @media(prefers-reduced-motion:reduce){#contextstream-root .cs-panel,#contextstream-root .cs-panel.open,#contextstream-root .cs-tab,#contextstream-root .cs-close{transition:none}}
 #contextstream-root .cs-session-start{display:block;width:100%;margin:0 0 8px;padding:10px 13px;border:1px solid #cdd9c5;border-radius:999px;background:#fff;color:#213628;text-align:left;font-weight:650;cursor:pointer}
+#contextstream-root .cs-match-badge{display:inline-block;font-size:10px;font-weight:700;padding:1px 6px;border-radius:4px;margin-right:6px;letter-spacing:0.02em;text-transform:uppercase;vertical-align:middle;line-height:1.3}
+#contextstream-root .cs-match-exact{background:#e2f7d8;color:#276b1b;border:1px solid #bce6ab}
+#contextstream-root .cs-match-supported{background:#dbeafe;color:#1e40af;border:1px solid #bfdbfe}
+#contextstream-root .cs-match-similar{background:#f3f4f6;color:#4b5563;border:1px solid #e5e7eb}
