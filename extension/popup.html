@@ -9,10 +9,23 @@
 <body>
   <main>
     <h1>✳ ContextStream</h1>
-    <p id="status">Ready to capture the current YouTube frame.</p>
-    <button id="analyze" type="button">Analyze this frame</button>
-    <button id="session" class="secondary" type="button">Start visual session</button>
-    <a id="profile" href="http://localhost:8080/#preferences" target="_blank" rel="noopener noreferrer">Open profile and preferences ↗</a>
+    <p id="status">Ready when you are.</p>
+    <button id="analyze" type="button">Explore this frame</button>
+    <button id="session" class="secondary" type="button">Watch with ContextStream</button>
+    <a id="profile" href="http://localhost:8080/#preferences" target="_blank" rel="noopener noreferrer">Your preferences ↗</a>
+    <details class="more-options">
+      <summary>More options</summary>
+      <label class="share-option"><input id="share-cache" type="checkbox"> Help improve discoveries for this video</label>
+      <small id="cache-status">Checking availability…</small>
+    </details>
+    <details class="developer-options">
+      <summary>Local setup</summary>
+      <form id="server-form">
+        <label for="server-url">Service address</label>
+        <input id="server-url" type="url" placeholder="http://localhost:8080" autocomplete="url">
+        <button class="secondary" type="submit">Save</button>
+      </form>
+    </details>
   </main>
   <script src="popup.js"></script>
 </body>

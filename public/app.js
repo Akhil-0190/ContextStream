@@ -5,6 +5,43 @@ const profileCode = document.querySelector('#profile-code');
 const historyList = document.querySelector('#history-list');
 const clearHistory = document.querySelector('#clear-history');
 let profileId = localStorage.getItem(storageKey) || '';
+let historyPage = 0;
+const HISTORY_PAGE_SIZE = 5;
+const FIREBASE_AUTH_TOKEN_STORAGE = 'contextstream-firebase-auth';
+let firebaseAuthPromise = null;
+
+async function firebaseIdToken(forceRefresh = false) {
+  if (firebaseAuthPromise) return firebaseAuthPromise;
+  firebaseAuthPromise = (async () => {
+    const config = window.CONTEXTSTREAM_FIREBASE_CONFIG;
+    const saved = JSON.parse(localStorage.getItem(FIREBASE_AUTH_TOKEN_STORAGE) || '{}');
+    if (!forceRefresh && saved.idToken && Number(saved.expiresAt) > Date.now() + 60_000) return saved.idToken;
+    let result;
+    if (saved.refreshToken) {
+      const response = await fetch(`https://securetoken.googleapis.com/v1/token?key=${encodeURIComponent(config.apiKey)}`, {
+        method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: saved.refreshToken })
+      });
+      result = await response.json();
+      if (response.ok) {
+        const auth = { idToken: result.id_token, refreshToken: result.refresh_token, expiresAt: Date.now() + Number(result.expires_in || 3600) * 1000 };
+        localStorage.setItem(FIREBASE_AUTH_TOKEN_STORAGE, JSON.stringify(auth));
+        return auth.idToken;
+      }
+      localStorage.removeItem(FIREBASE_AUTH_TOKEN_STORAGE);
+      if (!['TOKEN_EXPIRED', 'USER_NOT_FOUND', 'INVALID_REFRESH_TOKEN', 'USER_DISABLED'].includes(result.error?.message)) throw new Error('Firebase sign-in refresh failed. Reload the page and try again.');
+    }
+    const response = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${encodeURIComponent(config.apiKey)}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ returnSecureToken: true })
+    });
+    result = await response.json();
+    if (!response.ok) throw new Error(result.error?.message || 'Firebase anonymous sign-in failed.');
+    const auth = { idToken: result.idToken, refreshToken: result.refreshToken, expiresAt: Date.now() + Number(result.expiresIn || 3600) * 1000 };
+    localStorage.setItem(FIREBASE_AUTH_TOKEN_STORAGE, JSON.stringify(auth));
+    return auth.idToken;
+  })();
+  try { return await firebaseAuthPromise; } finally { firebaseAuthPromise = null; }
+}
 
 const currencySelect = form.elements.currency;
 if (currencySelect && typeof Intl.supportedValuesOf === 'function') {
@@ -18,7 +55,13 @@ if (currencySelect && typeof Intl.supportedValuesOf === 'function') {
 }
 
 async function request(path, options) {
-  const response = await fetch(`${API}${path}`, options);
+  const requestOptions = { ...options, headers: new Headers(options?.headers || {}) };
+  requestOptions.headers.set('authorization', `Bearer ${await firebaseIdToken()}`);
+  let response = await fetch(`${API}${path}`, requestOptions);
+  if (response.status === 401) {
+    requestOptions.headers.set('authorization', `Bearer ${await firebaseIdToken(true)}`);
+    response = await fetch(`${API}${path}`, requestOptions);
+  }
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || 'The request failed.');
   return data;
@@ -28,12 +71,12 @@ function showProfileCode(id) {
   profileCode.replaceChildren();
   if (!id) return;
   const label = document.createElement('span');
-  label.textContent = 'Extension profile code: ';
+  label.textContent = 'Connect your preferences in the extension: ';
   const code = document.createElement('code');
   code.textContent = id;
   const copy = document.createElement('button');
   copy.type = 'button';
-  copy.textContent = 'Copy';
+  copy.textContent = 'Copy for extension';
   copy.addEventListener('click', async () => {
     try { await navigator.clipboard.writeText(id); copy.textContent = 'Copied'; }
     catch { copy.textContent = 'Select and copy the code'; }
@@ -43,7 +86,7 @@ function showProfileCode(id) {
 
 async function refreshProfile() {
   if (!profileId) {
-    historyList.textContent = 'Save a profile and connect its code in the extension to keep selected video context here.';
+    historyList.textContent = 'Save your preferences and connect them in the extension to keep the discoveries you explore here.';
     return;
   }
   try {
@@ -88,7 +131,10 @@ async function refreshHistory() {
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(item);
     }
-    for (const items of groups.values()) {
+    const savedVideos = [...groups.values()];
+    const pageCount = Math.max(1, Math.ceil(savedVideos.length / HISTORY_PAGE_SIZE));
+    historyPage = Math.min(historyPage, pageCount - 1);
+    for (const items of savedVideos.slice(historyPage * HISTORY_PAGE_SIZE, (historyPage + 1) * HISTORY_PAGE_SIZE)) {
       const first = items[0];
       const card = document.createElement('details');
       card.className = 'history-card history-group';
@@ -152,6 +198,21 @@ async function refreshHistory() {
       }
       card.append(summary, removeAll, content); historyList.append(card);
     }
+    if (pageCount > 1) {
+      const pagination = document.createElement('nav');
+      pagination.className = 'history-pagination';
+      pagination.setAttribute('aria-label', 'Saved discovery pages');
+      const previous = document.createElement('button');
+      previous.type = 'button'; previous.textContent = 'Previous'; previous.disabled = historyPage === 0;
+      previous.addEventListener('click', () => { historyPage = Math.max(0, historyPage - 1); void refreshHistory(); });
+      const pageLabel = document.createElement('span');
+      pageLabel.textContent = `${historyPage + 1} of ${pageCount}`;
+      const next = document.createElement('button');
+      next.type = 'button'; next.textContent = 'Next'; next.disabled = historyPage >= pageCount - 1;
+      next.addEventListener('click', () => { historyPage = Math.min(pageCount - 1, historyPage + 1); void refreshHistory(); });
+      pagination.append(previous, pageLabel, next);
+      historyList.append(pagination);
+    }
   } catch (error) {
     historyList.textContent = `Could not load saved discoveries: ${error.message}`;
   }
@@ -198,9 +259,9 @@ clearHistory.addEventListener('click', async () => {
 });
 
 request('/api/health').then(health => {
-  document.querySelector('#health').textContent = `Gemini ${health.aiConfigured ? 'ready' : 'needs a key'} · Live search ${health.liveProductSearchConfigured ? 'ready' : 'needs a key'}`;
+  document.querySelector('#health').textContent = health.aiConfigured && health.liveProductSearchConfigured ? 'Ready to explore' : 'Some discovery features are unavailable right now.';
 }).catch(() => {
-  document.querySelector('#health').textContent = 'Service unavailable. Start it with npm start.';
+  document.querySelector('#health').textContent = 'ContextStream is unavailable right now. Please try again later.';
 });
 refreshProfile();
 

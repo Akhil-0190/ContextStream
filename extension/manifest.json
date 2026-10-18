@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "description": "Explore objects in YouTube videos when you choose.",
   "permissions": ["activeTab", "storage", "scripting", "tabCapture", "offscreen"],
-  "host_permissions": ["https://www.youtube.com/*", "http://localhost:8080/*", "http://127.0.0.1:8080/*"],
+  "host_permissions": ["https://www.youtube.com/*", "https://*.run.app/*", "https://identitytoolkit.googleapis.com/*", "https://securetoken.googleapis.com/*", "http://localhost:8080/*", "http://127.0.0.1:8080/*"],
+  "content_security_policy": { "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'" },
   "action": { "default_title": "Analyze this YouTube frame with ContextStream", "default_popup": "popup.html" },
   "background": { "service_worker": "background.js" },
   "content_scripts": [{ "matches": ["https://www.youtube.com/watch*"], "js": ["content.js"], "css": ["content.css"], "run_at": "document_idle" }]

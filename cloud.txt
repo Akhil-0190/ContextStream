@@ -1,0 +1,72 @@
+# ContextStream Google Cloud / Firebase handover
+
+Last reviewed: 2026-10-18. Cloud resources have been prepared for a first Cloud Run preview. The service has **not** been deployed. After the code PR is reviewed and merged, use `DEPLOYMENT.md` for the deployment command and smoke-check steps. Keep this document free of provider secret values and service-account keys.
+
+## Project and billing
+
+- Display name: `Ai Builder Cup 2026`
+- Project ID: `ai-builder-cup-2026-512009`
+- Project number: `1094076898220`
+- Billing: Blaze plan under the Google Cloud free trial at setup time. Balances, dates, and product eligibility change; check Billing before any deployment or sustained use. A budget alert notifies but does not cap spending.
+- Intended Cloud Run / Firestore region: `asia-south1` (Mumbai).
+
+## Firestore
+
+- Firestore Standard Edition, Native mode, `(default)` database is in `asia-south1` and was selected for the app. Security rules are restrictive; the backend uses its Google Cloud service identity rather than public client writes.
+- A separate named database `contextstream` was also created earlier. The app should use `(default)`; the named database was not deleted. Check it for needed records before deciding whether to remove it.
+- Shared collection root: `videoDiscoveryCache`. Firestore stores optional generic candidate observations and coverage metadata, not video frames, profile preferences, or provider keys. A viewer must opt in before shared writes. Candidate matches are provisional and can be reported/disputed.
+- Local development config is in `.env.local.example`. Copy it to ignored `.env.local` and use user ADC (`gcloud auth application-default login`). Never place an ADC file or service-account JSON key in the repo.
+
+## Firebase application and authentication
+
+- Firebase project is the same Google Cloud project.
+- Web app nickname: `ContextStream Extension`.
+- Web configuration is in `extension/firebase-config.js` and `public/firebase-config.js`. Its API key is public client configuration, not a provider credential. Review API key restrictions and Firebase authorized domains for the final deployed URL.
+- Anonymous Authentication was enabled for extension/profile sign-in. The anonymous auto-cleanup choice should be checked in Firebase Auth settings before launch; enabling it removes anonymous accounts older than 30 days but does not delete Firestore cache data.
+- Cloud Run verifies Firebase ID tokens for all application API routes except `/api/health`. Anonymous sign-in is an identity guardrail, not a complete abuse or billing boundary.
+
+## Runtime identity and Secret Manager
+
+- Runtime service account: `contextstream-run@ai-builder-cup-2026-512009.iam.gserviceaccount.com`.
+- It was created for Cloud Run and the user confirmed the Firestore role and secret-level grants. Before deployment, verify `roles/datastore.user` at project level and `roles/secretmanager.secretAccessor` on each provider secret. No service-account key was created.
+- Provider secrets created: `GEMINI_API_KEY`, `BRAVE_SEARCH_API_KEY`, `SERPAPI_API_KEY`, `SEARCHAPI_API_KEY`, `SERPER_API_KEY`. The service account was granted Secret Accessor per secret. Values are deliberately not recorded here.
+- Secrets use Google-managed encryption and automatic replication. No CMEK, rotation schedule, Pub/Sub notifications, expiry, or delayed version destruction was configured. Check each secret has an enabled version. `DEPLOYMENT.md` pins version `1` for the first revision; secret rotation requires deploying a new revision with the intended version.
+
+## App environment expected on Cloud Run
+
+Non-secret settings:
+
+```text
+FIREBASE_PROJECT_ID=ai-builder-cup-2026-512009
+GOOGLE_CLOUD_PROJECT=ai-builder-cup-2026-512009
+FIRESTORE_DATABASE_ID=(default)
+VIDEO_CACHE_BACKEND=firestore
+GEMINI_MODEL_PROFILE=compromise
+```
+
+Secret Manager environment bindings use the five names above. Cloud Run should use `asia-south1` and the `contextstream-run` identity. The server detects Cloud Run via `K_SERVICE`, binds to `0.0.0.0:$PORT`, requires Firebase bearer tokens on application APIs, disables local key management, and uses Firestore through ADC.
+
+## What deployment preparation includes
+
+- `Dockerfile` uses Node 20, `npm ci --omit=dev`, the checked-in `package-lock.json`, server, `lib/`, and `public/`.
+- `.dockerignore` excludes ignored data, local secrets, dependencies, logs, and private development notes.
+- `DEPLOYMENT.md` explains enabling/verifying APIs, Cloud Run deployment from merged `main`, secret binding, service identity, single-instance preview limits, extension URL configuration, health/smoke checks, rollback, and remaining production work.
+- The browser extension permits HTTPS `*.run.app` service addresses. After deployment, set the extension popup's **Service address** to the assigned service URL.
+
+## Important limitations before production
+
+- No Cloud Run service/revision has been deployed by this project yet. Deployment and the authenticated smoke test remain owner actions after the PR is merged.
+- A one-instance limit is only a temporary preview guardrail. Process-local rate windows and local JSON state do not become durable or distributed because instance count is set to one.
+- Profiles, opt-in history, provider usage/cooldowns, activity/session logs, and captured image archives currently use process or local filesystem storage. Cloud Run files are ephemeral. Migrate user state and usage controls to durable, user-scoped/shared storage before a public multi-user launch. Decide whether deployed image capture should be disabled or moved to access-controlled storage with retention.
+- Check service IAM/API enablement and provider quotas, configure billing alerts, and test the entire signed-in browser flow after deployment. Health alone does not prove analysis, follow-up, or Firestore writes work.
+- The first Firestore named database `contextstream` remains a separate resource; confirm its contents before deletion.
+
+## Setup chronology
+
+1. Created project `Ai Builder Cup 2026` and used the Blaze/free-trial billing account to provision Firebase/Firestore and prepare Cloud Run.
+2. Created a named `contextstream` Firestore database, then created the `(default)` Standard Native database in Mumbai after choosing the default database for app usage.
+3. Registered the Firebase Web app, enabled Anonymous Authentication, and configured the extension and website clients.
+4. Created five provider secrets in Secret Manager; no values are stored in project files.
+5. Created the dedicated `contextstream-run` identity; granted Firestore access and secret access on the provider secrets. No service-account key was downloaded.
+6. Continued local implementation of one-frame and continuous visual discovery, local detector/fallback flow, local and opted-in Firestore cache, search/follow-up, diagnostics, and user-facing controls.
+7. Prepared Docker/Cloud Run config and deployment docs. The owner will review/merge the PR and perform deployment afterward.
