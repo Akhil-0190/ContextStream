@@ -1,4 +1,4 @@
-# Local credentials and environment files
+# Credentials and local configuration
 .env
 .env.*
 !.env.example
@@ -8,22 +8,28 @@
 *.p12
 *.pfx
 
-# User data, profiles, provider keyring, logs, and captured frames
+# User data, profiles, logs, and captured frames
 /data/
 
-# Private planning and conversation history
+# Private planning and generated submission materials
 /Prompt.txt
 /developed_till_now.txt
 /need_to_develop.txt
 /context_transfer.txt
 /previous_chat_messages.txt
+/chat*.txt
 /teammate_product_catalog_handoff.txt
-/chat1.txt
-/chat2.txt
+/DEPLOYMENT.md
+/cloud.txt
+/presentation/
+/Submission Template*.pdf
+
+# Local deployment staging and package caches
+/.contextstream-deploy-source/
+/.npm-cache/
 
 # Dependencies and generated output
 /node_modules/
-/.npm-cache/
 /coverage/
 /dist/
 /build/

@@ -1,70 +1,69 @@
 # ContextStream
 
-Deployment preparation and the exact Cloud Run procedure are in [DEPLOYMENT.md](DEPLOYMENT.md). Cloud Run deployment is prepared but has not been performed; merge the pull request first, then deploy from `main`.
+**Stay in the video. Follow your curiosity.** ContextStream is a YouTube companion that helps you identify and explore visible objects while you watch. Start a one-frame scan or a visual session when you choose; playback is not analyzed by default.
 
-ContextStream is a consent-first YouTube discovery companion. It supports user-triggered analysis of one visible frame and a user-started rolling visual session. During a session, the extension uses a bundled on-device object detector to find new candidates; a cached matching observation or a focused crop can avoid a full-frame provider request. An initial scene inventory can catch objects outside the detector's fixed category list, and the legacy visual-change fallback activates if the detector cannot run. Gemini classifies supported items and returns evidence and boxes. Selecting an object searches its crop through available Lens and Shopping providers alongside one general-web search provider. If a box needs recovery, the original user-captured frame is retained for up to 10 minutes so the extension can crop the focused item; Lens still accepts only an object crop. The general-web providers are shuffled and tried sequentially until one returns acceptable results; they are not all merged together. Results are deduplicated, ranked, and shown with their retrieval sources. They are not a retailer-authorized catalog: retailer pages remain the source of truth for exact item identity, price, stock, and availability.
+| | |
+|---|---|
+| **Live prototype** | [contextstream-fwci3cdaba-el.a.run.app](https://contextstream-fwci3cdaba-el.a.run.app/) |
+| **Get the browser extension** | [Download ContextStream for Chrome or Brave](https://contextstream-fwci3cdaba-el.a.run.app/downloads/contextstream-extension.zip) |
 
-The visual session is user-started and visual-only. A bundled MediaPipe EfficientDet Lite0 detector runs locally in a worker on decoded YouTube frames at roughly 500 ms intervals. New local object tracks enter a small analysis queue; the extension crops the object from the source frame and asks the vision provider about only that object. If crop creation fails, it uses the full frame with the target box and an instruction to ignore all other content. A full-frame inventory still handles the initial scene and the legacy visual-change path remains available if the local detector fails. EfficientDet Lite0 has a fixed class list, so objects outside those classes may require the broader frame pass and are not guaranteed to trigger a focused request. Existing local or shared candidate observations near the same video time and location can satisfy a repeated detection without another provider call. The session continues tracking while it runs, and viewers can pause or stop it at any time; it also pauses when the tab is hidden or the video ends. Findings are provisional, reportable, chronologically ordered by last appearance, and displayed five at a time. Browser-local metadata remains user-specific. The optional shared Firestore cache contains candidate metadata only and requires an explicit contribution opt-in; cached shared results are personalized only when displayed. Captured frames and focused crops are archived locally by video/session on the backend for debugging, and the temporary frame reference expires after 10 minutes. No transcript or audio is ingested.
+The prototype is hosted on Google Cloud Run. The extension is currently installed manually; it is not listed in the Chrome Web Store.
 
-## Requirements
+## Try ContextStream
 
-- Node.js 20+
-- Brave or Chrome
-- Gemini API key from Google AI Studio
-- Brave Search API key for broad web results
-- Optional SerpApi key for visual Google Lens matching and structured Google Shopping offers
+1. Open the [prototype site](https://contextstream-fwci3cdaba-el.a.run.app/) and download the extension ZIP.
+2. Unzip it. In Chrome, open `chrome://extensions`; in Brave, open `brave://extensions`.
+3. Turn on **Developer mode**, choose **Load unpacked**, and select the extracted folder containing `manifest.json`.
+4. Open the extension’s settings and set its service address to `https://contextstream-fwci3cdaba-el.a.run.app`.
+5. Open a YouTube video. Use **Analyze this frame** for a single scan, or start a visual session and pause or stop whenever you like.
+
+The extension requests access to YouTube for capture and to the ContextStream service for analysis. Keep the extracted extension folder in place while using it; the browser loads the extension from that folder.
+
+## How it works
+
+- **You choose when it runs.** A one-frame scan is user-triggered. A visual session must be started by the viewer and can be paused or stopped at any time.
+- **Local visual tracking helps focus analysis.** During a session, a bundled MediaPipe EfficientDet Lite0 detector checks decoded video frames locally. New candidate objects are cropped and sent for focused analysis. A broader scene pass and visual-change fallback help cover objects outside the detector’s fixed class list.
+- **Explore a find.** Gemini analyzes visible objects and their context. Selecting an object can retrieve live web listings through the configured search providers, including visual matching and shopping search when available. Results are suggestions; retailer pages are the source of truth for identity, price, stock, and delivery.
+- **Reuse useful discoveries.** Device-local and optional shared video-cache metadata can help avoid repeating analysis. Shared contributions are opt-in. Cached candidates are provisional and can be reported as incorrect.
+- **Personalize if you want.** Optional preferences can tailor relevance and follow-up answers. You can use the extension without saving preferences.
+
+## Privacy at a glance
+
+- ContextStream does not ingest YouTube audio or transcripts.
+- Video frames are processed for the scan or session you start. Frames and focused crops may be sent to the configured analysis provider and are archived on the backend for diagnostics; the Cloud Run filesystem is temporary, so these archives are not durable. Do not use the prototype with sensitive video content.
+- The optional shared Firestore cache stores generic discovery metadata such as candidate labels, approximate times, and boxes. It does not store frames, profile IDs, or personalization preferences.
+- Saving discovery history is optional. Preferences and history are handled by the application backend; this prototype does not provide durable multi-user account storage.
+
+## Built with
+
+- **Firebase Authentication** verifies requests from the browser extension.
+- **Cloud Run** hosts the web experience and API.
+- **Firestore** provides the opt-in shared video-discovery cache.
+- **Gemini** analyzes selected frames and objects, supports follow-up questions, and can help rank findings.
+- **MediaPipe** runs the bundled object detector locally in the browser.
+
+Search and visual-shopping providers are configurable on the backend. Their availability depends on the deployed provider credentials and provider limits.
 
 ## Run locally
 
-Start the local server, then use the Provider key pool on the profile website to add credentials without putting them in source files or environment variables:
+Requirements: Node.js 20 or newer, a supported Chromium browser, and provider credentials for the features you want to use.
 
 ```powershell
+npm ci
 npm start
 ```
 
-Open `http://localhost:8080`, scroll to **Provider key pool**, and add Gemini, Brave Search, and SerpApi keys as needed. There is no configured-key count limit. Use the same **Quota group** for keys that share a project/account limit; use a different group for a separate authorized quota pool. Credentials are encrypted into ignored files under `data/`, shown only as masked suffixes, and never sent to YouTube. Cloud Run does not expose this local manager; configure deployed credentials with Secret Manager. Existing `GEMINI_API_KEY`, `BRAVE_SEARCH_API_KEY`, and `SERPAPI_API_KEY` environment variables remain supported.
+Open `http://localhost:8080`. In the extension settings, set the service address to `http://localhost:8080`. Configure provider credentials on the local profile page under **Developer tools and provider keys**. To use the shared Firestore cache locally, copy `.env.local.example` to `.env.local`, configure the project, and authenticate with Google Application Default Credentials. Keep credentials in local configuration or Secret Manager; do not commit them.
 
-Then:
+## Project layout
 
-1. Visit `http://localhost:8080`, save optional preferences, and copy the profile code shown after saving.
-2. Open `brave://extensions` (or `chrome://extensions`), enable Developer mode, select **Load unpacked**, and choose this project's `extension` directory.
-3. Open a YouTube watch page, click the ContextStream toolbar icon, and choose **Analyze this frame** for a one-off scan or **Start visual session** for rolling discovery. The toolbar action grants temporary access to the current tab. The page panel also provides session start, pause, and stop controls.
-4. In the page panel, open **Connect optional preferences** and enter the profile code. Select an identified object to fetch live web results. Asking about cheaper, similar, color, or local options keeps the selected object in context. Local search results do not verify store stock; check the retailer page or contact the seller.
+- `server.js`, `lib/` — web server, API, analysis, search, and shared-cache integration
+- `public/` — prototype site and profile page
+- `extension/` — browser extension, local detector, model, and MediaPipe runtime
 
-Gemini provides visual analysis, intent planning, evidence reranking, and optional Google Search grounding. `GEMINI_MODEL_PROFILE=compromise` is active by default and starts with Gemini 3.5 Flash-Lite, the model that responded quickly in the latest captured run; `GEMINI_MODEL_PROFILE=recommended` selects the quality/speed-first order. The selected profile is used by vision, text, reranking, and grounded-search fallback chains. Grounding can be disabled with `GEMINI_GROUNDED_SEARCH=false`. The local grounding-call cap is recorded in `data/grounded-search-usage.json`; it does not measure account-wide quotas or guarantee free use. The model chain is attempted across eligible Gemini quota groups before moving to the next model. Brave and SerpApi similarly rotate through configured groups after errors or cooldowns. This does not bypass provider quotas: keys sharing one project/account must share one quota group. Local monthly safety caps are per quota group; adjust `BRAVE_LOCAL_MONTHLY_CALL_LIMIT` and `SERPAPI_LOCAL_MONTHLY_CALL_LIMIT` only after checking the real provider account limits. SerpApi's image upload limit remains 500 KB; the crop encoder keeps the original dimensions when possible and only compresses or resizes enough to meet that provider ceiling. Google Lens prefers a validated selected-object crop. Only when crop preparation or caching fails, the extension sends a compressed full-frame fallback with a focused query naming the selected item and instructing Lens to ignore other scene content. This fallback is explicitly tagged and archived separately. Frame capture now first draws the decoded YouTube video at its available native resolution; if the browser blocks that canvas read, it falls back to a tab stream cropped to the YouTube player. Original PNG captures and any compressed/resized payloads are archived alongside every image sent to Gemini and Lens. For debugging, these images are archived locally in `data/image-captures/<videoId>/<sessionId>/`, with a JSON sidecar and per-session `manifest.jsonl` identifying the provider, model, purpose, video, frame time, and item when known. This archive is persistent and is not automatically pruned; delete `data/image-captures/` when you want to remove the captured images and metadata. The directory is excluded from Git and is not served by the web app. Temporary working frames remain in memory for up to 10 minutes. [SerpApi pricing](https://serpapi.com/pricing) · [Image upload limits and retention](https://serpapi.com/image-api) · [Google Lens API](https://serpapi.com/google-lens-api) · [Google Shopping API](https://serpapi.com/google-shopping-api).
+## Known limits
 
-The optional maximum price is added as a search constraint. A "cheaper" follow-up uses a visible reference price when a listing provides one; otherwise it searches price-oriented alternatives without claiming a proven price comparison. Search snippets may be incomplete or stale; check current price, stock, and delivery details on the retailer page.
-
-## Video cache development
-
-Passive-session samples are stored in two local layers: extension storage scoped to the browser profile (up to 10 recent videos, 250 object observations per video) and, during local-server development, ignored `data/video-discovery-cache.json` storage (up to 50 videos and 15 MiB). Cloud Run reads/writes the shared Firestore cache instead of relying on ephemeral server files. Cache records contain only generic candidate object metadata, source-model/prompt information where available, sample timestamps, and approximate boxes; they never contain frames, profile IDs, or personalization preferences. A viewer can report a cached candidate as incorrect; shared entries are marked disputed and excluded from later reads, while a device-local candidate is removed from that browser's cache. Cached candidates are loaded before the initial model pass when coverage is close to the playhead. The visible cached candidates may receive a Gemini personalization-only relevance score using the connected viewer profile; this score never changes identity and does not override the session's last-seen-time ordering. The continuous visual monitor still checks for new information.
-
-For local shared-cache development, copy `.env.local.example` to the ignored `.env.local` and set `VIDEO_CACHE_BACKEND=firestore`, `GOOGLE_CLOUD_PROJECT=<project-id>`, and (for a named database) `FIRESTORE_DATABASE_ID=<database-id>`. The server loads this file only for local development; it contains configuration, never credentials. Install Google Cloud CLI and authenticate as a Google user with Firestore access using `gcloud auth application-default login`; do not create a service-account key. The default database ID is `(default)`. Google documents that named databases do not qualify for the Firestore free quota. `GET /api/health` reports whether Firestore is configured and reachable. Firestore contributions require the viewer to enable the opt-in control in the extension; cache reads do not include user preferences or frame data. The extension and profile page use Firebase anonymous sign-in, and Cloud Run verifies Firebase ID tokens for API requests. The deployed process has per-account in-memory request limits; these reset on instance restart and are not shared across instances, so start Cloud Run with one maximum instance until a durable shared limiter is configured. Before a public deployment, add provider keys through Secret Manager, grant the Cloud Run service identity Firestore access, and set billing alerts. Firebase sign-in and these initial limits are guardrails, not a complete abuse or cost-control system.
-
-## API
-
-- `GET /api/health`
-- `GET /api/debug/session-log?sessionId=...` downloads a local-only JSON run log for a visual session. It records timestamped cache lookup/write outcomes, detector decision summaries, analysis/crop outcomes, provider/model trace IDs, and includes correlated server fallback logs; it excludes frames, API keys, and profile preferences. Session events are appended under ignored `data/session-runs/`, the general runtime log remains at ignored `data/activity.jsonl`, and image payloads remain in ignored `data/image-captures/`.
-- `GET /api/video-cache?videoId=...&durationSeconds=...&fromSeconds=...&toSeconds=...` reads local and, when configured, shared cache hypotheses for a bounded video-time range. Cloud Run requires a valid Firebase ID token for API requests.
-- `POST /api/video-cache/report` marks a cached observation as disputed rather than deleting it as confirmed-wrong. Local development reports also reach Firestore when the shared backend is configured.
-- `GET /api/search?q=backpack&profileId=...&brand=...&visibleText=...`
-- `GET|POST /api/profile`
-- `GET|POST|DELETE /api/discoveries` (history is opt-in per profile)
-- `POST /api/analyze` with `{image: dataUrl, maxPrice?: number, sessionSample?: boolean, shareToGlobalCache?: boolean, captureContext?: object}`. Session samples skip the background audit and write candidate metadata to local cache; Firestore writes require explicit `shareToGlobalCache: true`. Images sent to Gemini and Lens are archived by video/session ID for debugging.
-- `POST /api/analyze-object` with `{image, sourceImage, sourceFrame, focusItem, isObjectCrop, shareToGlobalCache, captureContext}`. The vision provider receives one focused crop or a target-contextual full-frame fallback. The original frame, crop, and provider input are archived separately; opted-in candidate metadata is written to Firestore when the shared backend is configured.
-- `POST /api/followup` with `{profileId, object, question, messages?, listings?, referencePrice?}`; a general intent planner uses the selected item, recent conversation, current listings, and saved profile. A profile's current location and budget are loaded server-side for every search.
-- `GET|POST /api/provider-keys` and `DELETE /api/provider-keys/:id` for local, encrypted provider key management (disabled on Cloud Run).
-
-## Current limits
-
-### Developer activity log
-
-The backend appends structured JSON Lines events to `data/activity.jsonl`, including HTTP requests and outcomes, model/provider calls, search queries and ranked listings, workflow decisions, UI actions, and errors. API keys, bearer tokens, and captured frame image data are redacted or excluded. While the server is running, inspect the latest 300 events at `http://localhost:8080/api/debug/logs`; use `?limit=1000` for more. For a live PowerShell tail, run `Get-Content .\data\activity.jsonl -Wait`. This is a local development log and grows until you clear or archive the file.
-
-
-- Results are live general web-search matches, not a retailer-authorized structured commerce feed. No product facts are fabricated, but a search result can still be an imperfect match.
-- Only visual scene discovery is active. ContextStream does not yet ingest YouTube transcripts or claim that the creator discussed a detected object.
-- The local detector recognizes only its bundled EfficientDet Lite0 class vocabulary. It is not open-vocabulary detection; uncommon classes, small objects, and occluded items can be missed. The focused Gemini pass classifies detected crops, while candidate cache metadata remains provisional rather than independently verified ground truth. A full-frame pass and the legacy change heuristic provide recovery coverage when the local detector cannot run.
-- Profiles and opt-in selected-object history are saved in local JSON files. They persist across local server restarts but are not suitable for multi-instance deployment or durable Cloud Run storage.
-- A one-instance Cloud Run preview can be deployed using [DEPLOYMENT.md](DEPLOYMENT.md). It uses Firestore for the shared video cache, but profiles, opt-in history, local usage counters, image archives, and diagnostic logs still use the container's ephemeral filesystem. Those records can disappear when an instance stops and are not shared across instances. Treat the preview as a functional integration check, not a durable multi-user launch. Durable user data and shared abuse/cost controls are still needed before public production use.
-- Brave Search currently provides $5 in monthly credits at $5 per 1,000 Search requests. The app's 900-request monthly cap is a local guardrail; it does not apply across other apps using the same Brave account.
+- The local detector has a fixed set of object categories. Small, occluded, or unsupported objects can be missed; results are not guaranteed to be exhaustive.
+- Search results can be imperfect or outdated. Check the retailer’s page before relying on a listing.
+- The deployed prototype uses temporary Cloud Run storage for diagnostic files and some local application data. It is a working prototype, not a durable production service.
+- The extension is distributed as a ZIP for manual installation and has not yet been published in the Chrome Web Store.
