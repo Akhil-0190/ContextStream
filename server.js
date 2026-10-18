@@ -322,31 +322,154 @@ function normalizeAnalyzedObjects(analyzed, frameId) {
   }
   return unique.sort((a, b) => Number(b.foreground) - Number(a.foreground) || ({ high: 0, medium: 1, low: 2 }[a.confidence] - { high: 0, medium: 1, low: 2 }[b.confidence]));
 }
-function normalizeSerpProduct(item, source, position) {
-  const rawUrl = item.product_link || item.link || item.url || item.serpapi_product_api || '';
+function cleanProductUrl(rawUrl) {
   let parsed;
   try { parsed = new URL(rawUrl); } catch { return null; }
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null;
+  const stripPrefixes = ['utm_'];
+  const stripKeys = new Set(['gclid', 'fbclid', 'dclid', '_ga', 'ncid', 'ref', 'ref_', 'pf_rd_r', 'pf_rd_p', 'pd_rd_r', 'pd_rd_w', 'pd_rd_wg']);
+  for (const key of [...parsed.searchParams.keys()]) {
+    const lower = key.toLowerCase();
+    if (stripKeys.has(lower) || stripPrefixes.some(p => lower.startsWith(p))) {
+      parsed.searchParams.delete(key);
+    }
+  }
+  return parsed;
+}
+function titleContainsToken(title, token) {
+  if (!title || !token) return false;
+  const cleanToken = String(token).trim().toLowerCase();
+  if (cleanToken.length < 2) return false;
+  const regex = new RegExp(`(^|[^a-z0-9])${cleanToken.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9]|$)`, 'i');
+  return regex.test(String(title));
+}
+function groundProductRecord(item, source, position = 1, sceneContext = {}) {
+  const rawUrl = item.product_link || item.link || item.url || item.serpapi_product_api || '';
+  const parsed = cleanProductUrl(rawUrl);
+  if (!parsed) return null;
   const title = plainSearchText(item.title || item.name || '').slice(0, 240);
   if (!title) return null;
+
   const priceText = (typeof item.price === 'string' ? item.price : item.price?.value) || item.price_text || '';
   const extractedPrice = item.extracted_price ?? item.price?.extracted_value ?? null;
   const numericPrice = Number(extractedPrice);
   const currency = normalizeCurrencyCode(item.currency || item.price?.currency || '', '');
   const priceInr = Number.isFinite(numericPrice) && numericPrice > 0 && (!currency || currency === 'INR')
     ? numericPrice : extractInrPrice(String(priceText));
+
+  let priceVerification = 'unverified';
+  if (Number.isFinite(numericPrice) && numericPrice > 0) {
+    priceVerification = 'source_structured';
+  } else if (Number.isFinite(priceInr) && priceInr > 0) {
+    priceVerification = 'snippet_derived';
+  }
+
+  const inStock = typeof item.in_stock === 'boolean' ? item.in_stock : null;
+  const stockVerification = typeof item.in_stock === 'boolean' ? (item.in_stock ? 'in_stock' : 'out_of_stock') : 'unverified';
+  const delivery = String(item.delivery || '').slice(0, 160);
+  const deliveryVerification = delivery.trim().length > 0 ? 'stated' : 'unverified';
+
+  const brandClue = String(sceneContext.brand || '').trim();
+  const modelClue = String(sceneContext.model || '').trim();
+  const itemClue = String(sceneContext.item || sceneContext.label || '').trim();
+  const hasBrand = brandClue ? titleContainsToken(title, brandClue) : false;
+  const hasModel = modelClue ? titleContainsToken(title, modelClue) : false;
+  const isLens = String(source || '').toLowerCase().includes('lens');
+
+  let matchType = 'similar';
+  let matchConfidence = 0.50;
+  let identityVerification = 'unverified';
+  let matchReason = 'Similar alternative in same product category';
+  let matchBadge = isLens ? 'Visual search result · verify product page' : (source && source.includes('Shopping') ? 'Shopping result · listing details may change' : 'Live web result · verify details');
+
+  if (hasBrand && hasModel) {
+    matchType = 'exact';
+    matchConfidence = sceneContext.identityConfidence === 'high' ? 0.95 : 0.85;
+    identityVerification = 'confirmed';
+    matchReason = `Exact match: contains detected brand (${brandClue}) and model (${modelClue})`;
+    matchBadge = 'Exact brand and model text in listing';
+  } else if (hasBrand || isLens) {
+    matchType = 'supported';
+    matchConfidence = isLens ? 0.80 : 0.70;
+    identityVerification = 'probable';
+    matchReason = hasBrand
+      ? `Supported match: contains detected brand (${brandClue})`
+      : 'Visual lens match from frame crop';
+    matchBadge = isLens ? 'Visual lens match · verify product details' : 'Brand text in listing';
+  }
+
+  const category = (typeof productCategoryFamily === 'function' ? (productCategoryFamily(title) || productCategoryFamily(itemClue)) : '') || 'general';
+
   return {
     id: crypto.createHash('sha256').update(parsed.href).digest('hex').slice(0, 16),
-    title, description: plainSearchText(item.snippet || item.description || item.delivery || '').slice(0, 500),
-    url: parsed.href, retailer: String(item.source || parsed.hostname.replace(/^www\./, '')).slice(0, 100),
-    priceInr, priceAmount: Number.isFinite(numericPrice) && numericPrice > 0 ? numericPrice : null,
+    title,
+    description: plainSearchText(item.snippet || item.description || item.delivery || '').slice(0, 500),
+    brand: hasBrand ? brandClue : (item.brand || null),
+    model: hasModel ? modelClue : (item.model || null),
+    category,
+    url: parsed.href,
+    retailer: String(item.source || parsed.hostname.replace(/^www\./, '')).slice(0, 100),
+    priceInr,
+    priceAmount: Number.isFinite(numericPrice) && numericPrice > 0 ? numericPrice : null,
     currency: currency || (/\$/.test(String(priceText)) ? 'USD' : /€/.test(String(priceText)) ? 'EUR' : /£/.test(String(priceText)) ? 'GBP' : /₹|\bINR\b|\bRs\.?/i.test(String(priceText)) ? 'INR' : ''),
-    priceText: String(priceText || '').slice(0, 80), image: item.thumbnail || item.image || '',
-    match: source === 'Google Lens' ? 'Visual search result · verify product page' : 'Shopping result · listing details may change',
-    matchType: 'similar', position, source, rating: Number(item.rating) || null,
-    inStock: typeof item.in_stock === 'boolean' ? item.in_stock : null,
-    delivery: String(item.delivery || '').slice(0, 160)
+    priceText: String(priceText || '').slice(0, 80),
+    image: item.thumbnail || item.image || '',
+    match: matchBadge,
+    matchType,
+    matchReason,
+    matchConfidence,
+    fieldVerification: {
+      identity: identityVerification,
+      price: priceVerification,
+      stock: stockVerification,
+      delivery: deliveryVerification
+    },
+    position,
+    source,
+    rating: Number(item.rating) || null,
+    inStock,
+    delivery,
+    retrievedAt: new Date().toISOString()
   };
+}
+function enrichProductWithSceneContext(product, sceneContext = {}) {
+  if (!product || !sceneContext) return product;
+  const brandClue = String(sceneContext.brand || '').trim();
+  const modelClue = String(sceneContext.model || '').trim();
+  if (!brandClue && !modelClue) return product;
+
+  const hasBrand = brandClue ? titleContainsToken(product.title, brandClue) : false;
+  const hasModel = modelClue ? titleContainsToken(product.title, modelClue) : false;
+  const isLens = String(product.source || '').toLowerCase().includes('lens');
+
+  if (hasBrand && hasModel) {
+    product.matchType = 'exact';
+    product.matchConfidence = sceneContext.identityConfidence === 'high' ? 0.95 : 0.85;
+    product.fieldVerification = {
+      ...(product.fieldVerification || {}),
+      identity: 'confirmed'
+    };
+    product.matchReason = `Exact match: contains detected brand (${brandClue}) and model (${modelClue})`;
+    product.match = 'Exact brand and model text in listing';
+    product.brand = brandClue;
+    product.model = modelClue;
+  } else if ((hasBrand || isLens) && product.matchType !== 'exact') {
+    product.matchType = 'supported';
+    product.matchConfidence = Math.max(product.matchConfidence || 0, isLens ? 0.80 : 0.70);
+    product.fieldVerification = {
+      ...(product.fieldVerification || {}),
+      identity: 'probable'
+    };
+    product.matchReason = hasBrand
+      ? `Supported match: contains detected brand (${brandClue})`
+      : 'Visual lens match from frame crop';
+    product.match = isLens ? 'Visual lens match · verify product details' : 'Brand text in listing';
+    if (hasBrand) product.brand = brandClue;
+  }
+  return product;
+}
+function normalizeSerpProduct(item, source, position, sceneContext = {}) {
+  return groundProductRecord(item, source, position, sceneContext);
 }
 async function attachDisplayPrices(products, preferredCurrency = 'INR', traceId = 'currency') {
   const target = normalizeCurrencyCode(preferredCurrency, 'INR');
@@ -990,18 +1113,15 @@ async function searchProducts(query, { context = '', location = '', minPrice = '
     if (!['https:', 'http:'].includes(parsed.protocol) || !result.title || seen.has(parsed.href)) return [];
     seen.add(parsed.href);
     const host = parsed.hostname.replace(/^www\./, '');
-    return [{
-      id: crypto.createHash('sha256').update(parsed.href).digest('hex').slice(0, 16),
-      title: plainSearchText(result.title).slice(0, 240),
-      description: plainSearchText(result.description).slice(0, 500),
+    const grounded = groundProductRecord({
       url: parsed.href,
-      retailer: host,
-      priceInr: extractInrPrice(`${result.title} ${result.description}`),
-      match: 'Similar product result',
-      matchType: 'similar',
-      position: index + 1,
-      queryVariant: result._queryIndex || 0
-    }];
+      title: result.title,
+      description: result.description,
+      source: host
+    }, 'Brave Search', index + 1, { brand, model, item: query, identityConfidence });
+    if (!grounded) return [];
+    grounded.queryVariant = result._queryIndex || 0;
+    return [grounded];
   });
   const brandTokens = searchTokens(brand);
   const modelTokens = searchTokens(model);
@@ -1021,10 +1141,14 @@ async function searchProducts(query, { context = '', location = '', minPrice = '
     product.priceStatus = Number(maxPrice) > 0 || Number(minPrice) > 0 ? product.priceInr === null ? 'price_not_shown' : product.priceInr > Number(maxPrice || Infinity) ? 'over_limit' : product.priceInr < Number(minPrice || 0) ? 'under_limit' : 'within_limit' : '';
     if (exactIdentitySupported && brandMatched && modelMatched) {
       product.match = 'Exact brand and model text in listing';
-      product.matchType = 'exact_text';
+      product.matchType = 'exact';
+      product.matchReason = `Exact match: contains detected brand (${brand}) and model (${model})`;
+      if (product.fieldVerification) product.fieldVerification.identity = 'confirmed';
     } else if (brandMatched) {
       product.match = 'Brand text in listing';
-      product.matchType = 'brand_text';
+      product.matchType = 'supported';
+      product.matchReason = `Supported match: contains detected brand (${brand})`;
+      if (product.fieldVerification && product.fieldVerification.identity === 'unverified') product.fieldVerification.identity = 'probable';
     }
   }
   // A profile's preferred ceiling is a ranking hint, not a reason to hide a
@@ -1032,10 +1156,10 @@ async function searchProducts(query, { context = '', location = '', minPrice = '
   // but keep over/under-range candidates available if the market has no fit.
   const eligibleProducts = products;
   const pricePriority = { within_limit: 0, '': 0, price_not_shown: 1, over_limit: 2, under_limit: 2 };
-  eligibleProducts.sort((a, b) => (pricePriority[a.priceStatus] ?? 1) - (pricePriority[b.priceStatus] ?? 1) || ({ exact_text: 0, brand_text: 1, similar: 2 }[a.matchType] - { exact_text: 0, brand_text: 1, similar: 2 }[b.matchType]) || b._relevance - a._relevance || a.position - b.position);
+  eligibleProducts.sort((a, b) => (pricePriority[a.priceStatus] ?? 1) - (pricePriority[b.priceStatus] ?? 1) || (({ exact: 0, exact_text: 0, supported: 1, brand_text: 1, similar: 2 }[a.matchType] ?? 2) - ({ exact: 0, exact_text: 0, supported: 1, brand_text: 1, similar: 2 }[b.matchType] ?? 2)) || b._relevance - a._relevance || a.position - b.position);
   for (const product of products) delete product._relevance;
   const rankedProducts = eligibleProducts;
-  console.log(`[Search] ${alternativeMode ? 'Alternative' : exactIdentitySupported ? 'Exact-identity' : 'Visual-cue'} retrieval across ${searchQueries.length} query variants returned ${rankedProducts.length} listing(s), ${rankedProducts.filter(product => product.matchType === 'exact_text').length} with matching brand+model text.`);
+  console.log(`[Search] ${alternativeMode ? 'Alternative' : exactIdentitySupported ? 'Exact-identity' : 'Visual-cue'} retrieval across ${searchQueries.length} query variants returned ${rankedProducts.length} listing(s), ${rankedProducts.filter(product => ['exact', 'exact_text'].includes(product.matchType)).length} with matching brand+model text.`);
   console.log(`[Search] Ranked listings: ${rankedProducts.map(product => `${product.title} (${product.url})`).join(' | ') || '(none)'}`);
   for (const product of products) delete product.queryVariant;
   return { products: rankedProducts, provider: 'Brave Search', searchedAt: new Date().toISOString(), searchesRemainingThisMonth: remaining, searchQuery: searchQueries.join(' | '), exactIdentitySupported, priceLimit: Number(maxPrice) > 0 ? Number(maxPrice) : null, alternativeMode };
@@ -1180,8 +1304,22 @@ Current request: ${JSON.stringify(question || 'Find the closest live product lis
         const cite = citations.find(entry => entry.url === parsedUrl.href);
         const priceText = String(item.priceText || '').trim();
         const priceSupported = priceText && cite?.citedText && cite.citedText.toLowerCase().includes(priceText.toLowerCase());
-        const host = parsedUrl.hostname.replace(/^www\./, '');
-        return [{ id: crypto.createHash('sha256').update(parsedUrl.href).digest('hex').slice(0, 16), title: plainSearchText(item.title).slice(0, 240), description: plainSearchText([item.description, item.rationale].filter(Boolean).join(' · ')).slice(0, 500), url: parsedUrl.href, retailer: host, priceInr: priceSupported ? extractInrPrice(priceText) : null, match: item.matchType === 'exact' ? 'Grounded candidate · exact design claim requires retailer verification' : 'Grounded similar product result', matchType: 'similar', position: index + 1, source: 'Gemini Google Search' }];
+        const grounded = groundProductRecord({
+          url: parsedUrl.href,
+          title: item.title,
+          description: [item.description, item.rationale].filter(Boolean).join(' · '),
+          source: host,
+          priceText: priceSupported ? priceText : '',
+          extracted_price: priceSupported ? extractInrPrice(priceText) : null
+        }, 'Gemini Google Search', index + 1, { brand: scene?.brand, model: scene?.model, item: query, identityConfidence: scene?.identityConfidence });
+        if (!grounded) return [];
+        if (item.matchType === 'exact') {
+          grounded.matchType = 'exact';
+          grounded.matchReason = 'Grounded citation candidate with verified retailer URL';
+          grounded.fieldVerification.identity = 'confirmed';
+          grounded.match = 'Grounded candidate · exact design claim requires retailer verification';
+        }
+        return [grounded];
       });
       console.log(`[${requestId}] Grounded search succeeded with ${items.length} citation-validated product page(s), ${citations.length} citations, and ${executedQueries.length} Google query/queries.`);
       console.log(`[${requestId}] Grounded listings: ${items.map(item => `${item.title} (${item.url})`).join(' | ') || '(none)'}`);
@@ -1685,9 +1823,11 @@ const server = http.createServer(async (req, res) => {
         const existingIds = new Set(job.products.map(product => product.id));
         const candidates = mergeProductSources([{ name: source, products }], Infinity, productOfferQuery, { traceId, primaryQuery: query }).filter(product => !existingIds.has(product.id));
         if (!candidates.length) return;
+        candidates.forEach(product => enrichProductWithSceneContext(product, job.relevanceContext));
         const gate = await classifyProductRelevance(candidates, { ...job.relevanceContext, traceId: `${traceId}-${source.toLowerCase().replace(/[^a-z0-9]+/g, '-')}` });
         archiveProductRelevanceAudit(captureContext, traceId, productOfferQuery, gate.accepted, gate.rejected, gate.status);
         if (gate.accepted.length) {
+          gate.accepted.forEach(product => enrichProductWithSceneContext(product, job.relevanceContext));
           job.products = mergeProductSources([{ name: 'Previously verified', products: job.products }, { name: source, products: gate.accepted }], Infinity, productOfferQuery, { traceId, primaryQuery: query });
           job.providersUsed = [...new Set([...job.providersUsed, source])];
           job.message = `${job.products.length} verified match${job.products.length === 1 ? '' : 'es'} so far; searching other sources…`;
@@ -1711,6 +1851,7 @@ const server = http.createServer(async (req, res) => {
         scene.evidence = [scene.evidence, mark.evidence].filter(Boolean).join(' ');
         job.relevanceContext = { item: query, brand: scene.brand, model: scene.model, evidence: scene.evidence, visibleText: scene.visibleText, details: scene.details, intent: productOfferQuery };
         job.identityUpdate = { brand: scene.brand, model: scene.model, visibleText: scene.visibleText, details: scene.details, identityConfidence: scene.identityConfidence, evidence: mark.evidence, ...(mark.bbox.length ? { bbox: mark.bbox } : {}) };
+        if (Array.isArray(job.products)) job.products.forEach(product => enrichProductWithSceneContext(product, job.relevanceContext));
         job.message = mark.bbox.length ? 'A tighter object box is ready; preparing the focused Lens crop…' : 'Checking matches against the extra visual details…';
         job.updatedAt = Date.now();
       };
