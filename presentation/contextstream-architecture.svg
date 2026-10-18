@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title description">
+  <title id="title">ContextStream system architecture</title>
+  <desc id="description">A slide-ready architecture diagram showing user-controlled YouTube capture, local object detection and cache, backend analysis, AI and shopping search, paginated discovery, and optional shared Firestore cache.</desc>
+  <defs>
+    <style>
+      .bg{fill:#f5f6ef}.ink{fill:#14251e}.muted{fill:#64736b}.forest{fill:#10291f}.lime{fill:#c8f36a}.line{stroke:#718478;stroke-width:3;fill:none;stroke-linecap:round;stroke-linejoin:round}.dash{stroke:#98a99c;stroke-width:2;stroke-dasharray:7 7;fill:none}.card{fill:#fffefa;stroke:#dbe3d8;stroke-width:2}.client{fill:#edf4e7;stroke:#bfceb9;stroke-width:2}.backend{fill:#e7f0e8;stroke:#aec6b2;stroke-width:2}.ai{fill:#fff3d9;stroke:#e6ce9a;stroke-width:2}.store{fill:#eef2ed;stroke:#cbd6cc;stroke-width:2}.label{font:700 17px Arial,sans-serif;letter-spacing:1.3px;fill:#738279}.h1{font:700 38px Arial,sans-serif;fill:#14251e}.sub{font:400 19px Arial,sans-serif;fill:#64736b}.h2{font:700 22px Arial,sans-serif;fill:#14251e}.body{font:400 16px Arial,sans-serif;fill:#4e6156}.bodyLight{font:400 16px Arial,sans-serif;fill:#d7e3da}.small{font:400 13px Arial,sans-serif;fill:#64736b}.pill{font:700 12px Arial,sans-serif;letter-spacing:.7px}.arrow{fill:#718478}.num{font:700 14px Arial,sans-serif;fill:#fff}.white{fill:#fff}.greenText{fill:#183a2b}.center{text-anchor:middle}
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0L10 5L0 10z" class="arrow"/></marker>
+    <marker id="arrowLime" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0L10 5L0 10z" fill="#7b9f42"/></marker>
+  </defs>
+  <rect width="1600" height="900" class="bg"/>
+  <rect x="0" y="0" width="1600" height="14" class="forest"/>
+  <text x="72" y="76" class="label">CONTEXTSTREAM · DEPLOYED SYSTEM ARCHITECTURE</text>
+  <text x="72" y="124" class="h1">Curiosity, on your terms.</text>
+  <text x="72" y="158" class="sub">A consent-first path from a moment in a video to useful, explorable discoveries.</text>
+  <rect x="1240" y="58" width="290" height="42" rx="21" fill="#edf4e7" stroke="#bfceb9"/>
+  <circle cx="1263" cy="79" r="6" fill="#7b9f42"/>
+  <text x="1280" y="84" class="pill" fill="#183a2b">CLOUD RUN · ASIA-SOUTH1</text>
+
+  <!-- pipeline cards -->
+  <g>
+    <rect x="72" y="215" width="210" height="254" rx="20" class="card"/>
+    <circle cx="103" cy="250" r="17" class="forest"/><text x="103" y="255" class="num center">1</text>
+    <text x="130" y="257" class="h2">Watch</text>
+    <text x="94" y="301" class="body"><tspan x="94" dy="0">YouTube playback</tspan><tspan x="94" dy="25">remains in the</tspan><tspan x="94" dy="25">viewer’s control.</tspan></text>
+    <rect x="94" y="394" width="166" height="42" rx="21" fill="#edf4e7"/>
+    <text x="177" y="420" class="pill center greenText">NO AUTO-CAPTURE</text>
+  </g>
+  <g>
+    <rect x="320" y="215" width="210" height="254" rx="20" class="client"/>
+    <circle cx="351" cy="250" r="17" class="forest"/><text x="351" y="255" class="num center">2</text>
+    <text x="378" y="257" class="h2">Start &amp; control</text>
+    <text x="342" y="301" class="body"><tspan x="342" dy="0">Browser extension:</tspan><tspan x="342" dy="25">analyze one frame, or</tspan><tspan x="342" dy="25">start, pause, resume</tspan><tspan x="342" dy="25">and stop monitoring.</tspan></text>
+    <rect x="342" y="394" width="166" height="42" rx="21" class="lime"/>
+    <text x="425" y="420" class="pill center greenText">EXPLICIT CONSENT</text>
+  </g>
+  <g>
+    <rect x="568" y="215" width="210" height="254" rx="20" class="client"/>
+    <circle cx="599" cy="250" r="17" class="forest"/><text x="599" y="255" class="num center">3</text>
+    <text x="626" y="257" class="h2">Detect locally</text>
+    <text x="590" y="301" class="body"><tspan x="590" dy="0">MediaPipe detector</tspan><tspan x="590" dy="25">tracks objects on-device.</tspan><tspan x="590" dy="25">Novelty + local cache</tspan><tspan x="590" dy="25">avoid repeat analysis.</tspan></text>
+    <rect x="590" y="394" width="166" height="42" rx="21" fill="#fffefa" stroke="#bfceb9"/>
+    <text x="673" y="420" class="pill center greenText">FRAMES STAY LOCAL</text>
+  </g>
+  <g>
+    <rect x="816" y="215" width="210" height="254" rx="20" class="backend"/>
+    <circle cx="847" cy="250" r="17" class="forest"/><text x="847" y="255" class="num center">4</text>
+    <text x="874" y="257" class="h2">Cloud Run API</text>
+    <text x="838" y="301" class="body"><tspan x="838" dy="0">Node.js backend analyzes</tspan><tspan x="838" dy="25">focused crops; target-aware</tspan><tspan x="838" dy="25">full-frame fallback works</tspan><tspan x="838" dy="25">when crop creation fails.</tspan></text>
+    <rect x="838" y="394" width="166" height="42" rx="21" fill="#fffefa" stroke="#aec6b2"/>
+    <text x="921" y="420" class="pill center greenText">SINGLE INSTANCE</text>
+  </g>
+  <g>
+    <rect x="1064" y="215" width="210" height="254" rx="20" class="ai"/>
+    <circle cx="1095" cy="250" r="17" class="forest"/><text x="1095" y="255" class="num center">5</text>
+    <text x="1122" y="257" class="h2">Search &amp; match</text>
+    <text x="1086" y="301" class="body"><tspan x="1086" dy="0">Gemini identifies with</tspan><tspan x="1086" dy="25">visual evidence. Lens,</tspan><tspan x="1086" dy="25">Shopping and web search</tspan><tspan x="1086" dy="25">find related listings.</tspan></text>
+    <rect x="1086" y="394" width="166" height="42" rx="21" fill="#fffefa" stroke="#e6ce9a"/>
+    <text x="1169" y="420" class="pill center" fill="#775d2a">PROVIDER FALLBACKS</text>
+  </g>
+  <g>
+    <rect x="1312" y="215" width="216" height="254" rx="20" class="card"/>
+    <circle cx="1343" cy="250" r="17" class="forest"/><text x="1343" y="255" class="num center">6</text>
+    <text x="1370" y="257" class="h2">Explore</text>
+    <text x="1334" y="301" class="body"><tspan x="1334" dy="0">Relevant results, five</tspan><tspan x="1334" dy="25">at a time. Open listings,</tspan><tspan x="1334" dy="25">ask follow-ups, report</tspan><tspan x="1334" dy="25">wrong cached matches.</tspan></text>
+    <rect x="1334" y="394" width="172" height="42" rx="21" fill="#edf4e7"/>
+    <text x="1420" y="420" class="pill center greenText">PERSONALIZED VIEW</text>
+  </g>
+
+  <!-- main arrows -->
+  <path d="M284 342H309" class="line" marker-end="url(#arrow)"/>
+  <path d="M532 342H557" class="line" marker-end="url(#arrow)"/>
+  <path d="M780 342H805" class="line" marker-end="url(#arrow)"/>
+  <path d="M1028 342H1053" class="line" marker-end="url(#arrow)"/>
+  <path d="M1276 342H1301" class="line" marker-end="url(#arrow)"/>
+
+  <!-- cache and support layer -->
+  <text x="72" y="526" class="label">CACHE, IDENTITY &amp; OPERATIONS</text>
+  <path d="M673 469V500H272V542" class="dash" marker-end="url(#arrow)"/>
+  <path d="M921 469V514H804V542" class="dash" marker-end="url(#arrow)"/>
+  <path d="M921 469V524H1325V542" class="dash" marker-end="url(#arrow)"/>
+
+  <rect x="72" y="550" width="400" height="160" rx="18" class="store"/>
+  <text x="98" y="589" class="h2">Device-local cache</text>
+  <text x="98" y="623" class="body"><tspan x="98" dy="0">Browser-profile observations help skip redundant</tspan><tspan x="98" dy="24">work. Local preferences stay with the viewer.</tspan></text>
+  <rect x="98" y="665" width="154" height="27" rx="13" fill="#fffefa"/>
+  <text x="175" y="683" class="pill center greenText">USER-SCOPED</text>
+
+  <rect x="600" y="550" width="400" height="160" rx="18" class="store"/>
+  <text x="626" y="589" class="h2">Shared cache · Firestore</text>
+  <text x="626" y="623" class="body"><tspan x="626" dy="0">Only opted-in candidate metadata: descriptions,</tspan><tspan x="626" dy="24">evidence, time and approximate boxes. No frames</tspan><tspan x="626" dy="24">or profile preferences. Disputed matches are filtered.</tspan></text>
+
+  <rect x="1128" y="550" width="400" height="160" rx="18" class="store"/>
+  <text x="1154" y="589" class="h2">Firebase Auth + Secret Manager</text>
+  <text x="1154" y="623" class="body"><tspan x="1154" dy="0">Anonymous Firebase sign-in protects API calls.</tspan><tspan x="1154" dy="24">Cloud Run identity reads Firestore and provider</tspan><tspan x="1154" dy="24">secrets; secrets are not bundled in the extension.</tspan></text>
+
+  <path d="M600 672H484V436H548" class="dash" marker-end="url(#arrowLime)"/>
+  <text x="530" y="699" class="small center">cache lookup</text>
+
+  <!-- privacy and status footer -->
+  <rect x="72" y="750" width="1456" height="82" rx="18" class="forest"/>
+  <circle cx="110" cy="791" r="16" class="lime"/>
+  <path d="M103 791l5 5 10-12" stroke="#183a2b" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="142" y="784" class="h2 white">Privacy + runtime boundary</text>
+  <text x="142" y="810" class="bodyLight">Viewers start sessions. Frames selected for analysis reach the backend/providers; only candidate metadata is shared by opt-in.</text>
+  <text x="72" y="865" class="small">Shared cache is durable in Firestore. Profile/history, usage counters and diagnostic files remain ephemeral on the single Cloud Run instance.</text>
+  <text x="1528" y="865" class="small" text-anchor="end">ContextStream · Architecture</text>
+</svg>
