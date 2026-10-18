@@ -1596,11 +1596,13 @@ async function gemini(prompt, image, traceId = 'request', selectedCredential = n
   const priority = new Map(modelPriority.map((id, index) => [id, index]));
   modelChain.sort((a, b) => (priority.get(a.id) ?? Infinity) - (priority.get(b.id) ?? Infinity));
   const failures = [];
+  const billingBlockedGroups = new Set();
   for (let index = 0; index < modelChain.length; index++) {
     const model = modelChain[index];
     if (index > 0) console.warn(`[${traceId}] Trying ${model.name} across available project keys.`);
     let modelAvailable = false;
     for (const credential of credentials) {
+      if (billingBlockedGroups.has(credential.quotaGroup)) continue;
       const cooldownKey = `gemini:${credential.quotaGroup}:${model.id}`;
       if (Date.now() < (providerKeyCooldowns.get(`gemini:key:${credential.id}`) || 0) || Date.now() < (providerKeyCooldowns.get(cooldownKey) || 0)) continue;
       modelAvailable = true;
@@ -1610,11 +1612,23 @@ async function gemini(prompt, image, traceId = 'request', selectedCredential = n
         return { ...result, _provider: model.name, _modelId: model.id, _credentialLabel: credential.label };
       } catch (error) {
         if (requestOptions.signal?.aborted) throw requestOptions.signal.reason || error;
+        if (Number(error.status) === 402) {
+          billingBlockedGroups.add(credential.quotaGroup);
+          failures.push(`${credential.label}: Gemini billing credits are depleted (HTTP 402).`);
+          console.warn(`[${traceId}] Skipping remaining Gemini models for project group "${credential.quotaGroup}" because its billing credits are depleted.`);
+          continue;
+        }
         failures.push(`${model.name} (${credential.label}): ${error.message}`);
         console.warn(`[${traceId}] ${model.name} on project group "${credential.quotaGroup}" failed; evaluating the next eligible key/model.`);
       }
     }
     if (!modelAvailable) console.log(`[${traceId}] Skipping ${model.name}; all configured quota groups are cooling down.`);
+  }
+  if (billingBlockedGroups.size && credentials.every(credential => billingBlockedGroups.has(credential.quotaGroup))) {
+    const error = new Error('Gemini billing credits are depleted for the configured API project. Add prepaid credits in Google AI Studio or configure a funded Gemini API project. Analysis will work again after billing is restored. https://ai.google.dev/gemini-api/docs/billing');
+    error.status = 402;
+    error.code = 'GEMINI_BILLING_EXHAUSTED';
+    throw error;
   }
   throw new Error(`Gemini model/key fallback chain exhausted: ${failures.join(' | ')}`);
 }
@@ -1660,6 +1674,7 @@ async function analyzeWithProviders(prompt, image, traceId = 'request', schema, 
       if (result) return result;
     } catch (error) {
       if (requestOptions.signal?.aborted) throw requestOptions.signal.reason || error;
+      if (Number(error.status) === 402) throw error;
       failures.push(`Gemini: ${error.message}`);
       console.warn(`[${traceId}] Gemini model/key fallback chain exhausted.`);
     }
@@ -2177,7 +2192,7 @@ const server = http.createServer(async (req, res) => {
       archiveOutboundImage(input.sourceImage || input.image,{provider:'local-capture',purpose:crop?'focused-object-crop-original':'focused-object-full-frame-fallback-original',traceId,captureContext:context});
       let analyzed;
       try { analyzed = await analyzeWithProviders(prompt,input.image,traceId,schema,null,{captureContext:context,capturePurpose:crop?'focused-object-analysis-crop':'focused-object-analysis-full-frame-fallback'}); }
-      catch(error){return json(res,502,{error:error.message,traceId});}
+      catch(error){return json(res,Number(error.status)===402?402:502,{error:error.message,traceId});}
       if(!analyzed)return json(res,503,{error:'No Gemini key is configured for focused object analysis.',traceId});
       const frameId=cacheAnalyzedFrame(input.image,crop?'selected-object-crop':'full-video-frame',context);
       // The focused endpoint is asked to describe only the detector-selected
@@ -2225,7 +2240,7 @@ const server = http.createServer(async (req, res) => {
       } catch (e) {
         console.error('[' + traceId + '] Analysis failed after ' + (Date.now() - started) + 'ms: ' + e.message);
         if (analysisAbort?.signal.aborted) return;
-        return json(res, 502, { error: e.message, traceId });
+        return json(res, Number(e.status) === 402 ? 402 : 502, { error: e.message, traceId });
       }
       if (analysisAbort?.signal.aborted) return;
       if (!analyzed) return json(res, 503, { error: 'No Gemini key is configured. Add a key in ContextStream’s local Provider key pool or set GEMINI_API_KEY in the server environment.' });
